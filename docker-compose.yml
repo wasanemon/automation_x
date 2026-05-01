@@ -1,0 +1,36 @@
+services:
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://growth:growth@db:5432/growth_agent
+      APP_ENV: development
+      POSTIZ_BASE_URL: http://postiz:5000/public/v1
+      POSTIZ_API_KEY: ""
+      POSTIZ_X_INTEGRATION_ID: ""
+      X_API_BASE_URL: https://api.x.com
+      X_BEARER_TOKEN: ""
+      X_USER_ID: ""
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: growth_agent
+      POSTGRES_USER: growth
+      POSTGRES_PASSWORD: growth
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U growth -d growth_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:

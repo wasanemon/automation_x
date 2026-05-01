@@ -1,0 +1,39 @@
+[project]
+name = "growth-agent"
+version = "0.1.0"
+description = "Production-minded MVP service for a semi-autonomous X marketing Growth Agent."
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.13.0",
+    "fastapi>=0.111.0",
+    "httpx>=0.27.0",
+    "psycopg[binary]>=3.2.0",
+    "pydantic-settings>=2.3.0",
+    "sqlalchemy>=2.0.30",
+    "uvicorn[standard]>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+    "ruff>=0.5.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["growth_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008"]
