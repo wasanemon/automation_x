@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     )
     duplicate_similarity_threshold: float = Field(default=0.88, ge=0.5, le=1)
     auto_schedule_score_threshold: int = Field(default=80, ge=0, le=100)
+    auto_posting_enabled: bool = False
+    automation_kill_switch: bool = False
+    max_auto_schedule_per_cycle: int = Field(default=1, ge=0, le=20)
+    max_auto_schedule_per_day: int = Field(default=3, ge=0, le=100)
+    min_hours_between_auto_posts: float = Field(default=4, ge=0, le=24 * 14)
+    default_schedule_delay_minutes: int = Field(default=30, ge=0, le=24 * 7 * 60)
 
     @property
     def owned_domain_list(self) -> tuple[str, ...]:

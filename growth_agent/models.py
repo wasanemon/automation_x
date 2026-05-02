@@ -125,3 +125,23 @@ class FeedbackRun(Base, TimestampMixin):
     summary: Mapped[str] = mapped_column(Text)
     metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     recommendations_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+
+class AutomationRun(Base):
+    __tablename__ = "automation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="running", index=True)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_drafts_count: Mapped[int] = mapped_column(Integer, default=0)
+    evaluated_drafts_count: Mapped[int] = mapped_column(Integer, default=0)
+    auto_scheduled_count: Mapped[int] = mapped_column(Integer, default=0)
+    approval_required_count: Mapped[int] = mapped_column(Integer, default=0)
+    rejected_count: Mapped[int] = mapped_column(Integer, default=0)
+    reconciled_count: Mapped[int] = mapped_column(Integer, default=0)
+    metrics_collected_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

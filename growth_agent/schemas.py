@@ -149,6 +149,7 @@ class MetricsTopPost(BaseModel):
     likes: int
     replies: int
     reposts: int
+    quotes: int
     bookmarks: int
 
 
@@ -194,3 +195,52 @@ class WeeklyReportResponse(BaseModel):
     period_start: datetime
     period_end: datetime
     report: str
+
+
+class AutomationRunHistoryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    started_at: datetime
+    finished_at: datetime | None
+    status: str
+    dry_run: bool
+    created_drafts_count: int
+    evaluated_drafts_count: int
+    auto_scheduled_count: int
+    approval_required_count: int
+    rejected_count: int
+    reconciled_count: int
+    metrics_collected_count: int
+    skipped_count: int
+    error_json: list[dict[str, Any]]
+    summary_json: dict[str, Any]
+
+
+class AutomationCycleResponse(BaseModel):
+    cycle_id: int
+    created_drafts_count: int
+    evaluated_drafts_count: int
+    auto_scheduled_count: int
+    approval_required_count: int
+    rejected_count: int
+    reconciled_count: int
+    metrics_collected_count: int
+    skipped_count: int
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+    next_recommended_action: str
+    dry_run: bool
+    kill_switch_active: bool
+
+
+class AutomationStatusResponse(BaseModel):
+    auto_posting_enabled: bool
+    scheduling_dry_run: bool
+    kill_switch_active: bool
+    today_auto_scheduled_count: int
+    next_post_available_at: datetime | None
+    approval_waiting_draft_count: int
+    unreconciled_post_count: int
+    metrics_missing_post_count: int
+    last_automation_run: AutomationRunHistoryResponse | None
+    system_warnings: list[str]

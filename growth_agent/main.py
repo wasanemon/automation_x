@@ -12,6 +12,8 @@ from growth_agent.deps import get_postiz_client, get_x_client, require_api_key
 from growth_agent.models import Draft, Idea, Post
 from growth_agent.schemas import (
     ApprovalRequest,
+    AutomationCycleResponse,
+    AutomationStatusResponse,
     DraftGenerateRequest,
     DraftResponse,
     EvaluationResponse,
@@ -31,6 +33,7 @@ from growth_agent.schemas import (
     ScheduleDraftRequest,
     WeeklyReportResponse,
 )
+from growth_agent.services.automation import automation_status, run_automation_cycle
 from growth_agent.services.drafts import create_drafts_for_idea
 from growth_agent.services.evaluator import DraftEvaluator
 from growth_agent.services.feedback import active_playbook_rules, run_feedback
@@ -234,16 +237,39 @@ def list_posts(db: Session = Depends(get_db)) -> list[Post]:
     return list(db.scalars(select(Post).order_by(Post.created_at.desc(), Post.id.desc())))
 
 
+@app.get(
+    "/automation/status",
+    response_model=AutomationStatusResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def get_automation_status(db: Session = Depends(get_db)) -> AutomationStatusResponse:
+    return automation_status(db, get_settings())
+
+
+@app.post(
+    "/automation/run-cycle",
+    response_model=AutomationCycleResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def run_automation_cycle_endpoint(
+    db: Session = Depends(get_db),
+    postiz_client: PostizClient = Depends(get_postiz_client),
+    x_client: XApiClient = Depends(get_x_client),
+) -> AutomationCycleResponse:
+    return run_automation_cycle(db, postiz_client, x_client, get_settings())
+
+
 @app.post(
     "/posts/reconcile-x-ids",
     response_model=ReconcileResponse,
     dependencies=[Depends(require_api_key)],
 )
 def reconcile_x_ids(
-    payload: ReconcileRequest,
+    payload: ReconcileRequest | None = None,
     db: Session = Depends(get_db),
     x_client: XApiClient = Depends(get_x_client),
 ) -> ReconcileResponse:
+    payload = payload or ReconcileRequest()
     settings = get_settings()
     if payload.mappings:
         outcome = apply_manual_mappings(
@@ -289,10 +315,11 @@ def reconcile_x_ids(
     dependencies=[Depends(require_api_key)],
 )
 def collect_post_metrics(
-    payload: MetricsCollectRequest,
+    payload: MetricsCollectRequest | None = None,
     db: Session = Depends(get_db),
     x_client: XApiClient = Depends(get_x_client),
 ) -> MetricsCollectResponse:
+    payload = payload or MetricsCollectRequest()
     post_ids = _metric_post_ids(payload)
     if not get_settings().x_bearer_token:
         return MetricsCollectResponse(

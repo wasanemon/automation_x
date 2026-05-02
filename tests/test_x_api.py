@@ -38,8 +38,8 @@ def test_x_client_lists_user_tweets_with_public_fields(monkeypatch):
 
     client = XApiClient(_settings(), transport=httpx.MockTransport(handler))
     posts = client.list_owned_posts(
-        start_time=datetime(2026, 5, 1, tzinfo=UTC),
-        end_time=datetime(2026, 5, 2, tzinfo=UTC),
+        start_time=datetime(2026, 5, 1, 0, 0, 0, 123456, tzinfo=UTC),
+        end_time=datetime(2026, 5, 2, 0, 0, 0, 654321, tzinfo=UTC),
     )
 
     assert posts[0].x_post_id == "1234567890"
@@ -48,6 +48,8 @@ def test_x_client_lists_user_tweets_with_public_fields(monkeypatch):
     assert requests[0].url.path == "/2/users/42/tweets"
     assert params["tweet.fields"] == "created_at,public_metrics,author_id,conversation_id"
     assert params["exclude"] == "retweets,replies"
+    assert params["start_time"] == "2026-05-01T00:00:00Z"
+    assert params["end_time"] == "2026-05-02T00:00:00Z"
     assert "organic_metrics" not in str(requests[0].url)
     assert requests[0].headers["authorization"] == "Bearer token-secret"
 

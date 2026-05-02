@@ -330,7 +330,7 @@ def test_reconcile_metrics_feedback_and_weekly_report(client, mock_x, monkeypatc
     )
     monkeypatch.setenv("X_BEARER_TOKEN", "test-token")
     get_settings.cache_clear()
-    collect = client.post("/metrics/collect", json={})
+    collect = client.post("/metrics/collect")
     assert collect.status_code == 200
     assert collect.json()["collected"] == 1
     assert collect.json()["skipped"] == 0
@@ -344,6 +344,7 @@ def test_reconcile_metrics_feedback_and_weekly_report(client, mock_x, monkeypatc
     assert summary["engagement_total"] == 32
     assert summary["average_engagement_rate"] == 0.16
     assert summary["top_posts"][0]["post_id"] == post["id"]
+    assert summary["top_posts"][0]["quotes"] == 1
 
     feedback = client.post("/feedback/run")
     assert feedback.status_code == 200
@@ -387,6 +388,31 @@ def test_automatic_reconcile_uses_owned_x_lookup(client, mock_x, monkeypatch):
     assert posts[0]["x_post_id"] == "9876543210"
     assert posts[0]["x_post_created_at"] is not None
     assert posts[0]["x_reconciled_at"] is not None
+
+
+def test_automatic_reconcile_accepts_missing_body(client, mock_x, monkeypatch):
+    post = _create_live_post(
+        client,
+        monkeypatch,
+        title="No body reconcile",
+        description="The endpoint should treat a missing body like an automatic reconcile request.",
+    )
+    monkeypatch.setenv("X_BEARER_TOKEN", "test-token")
+    monkeypatch.setenv("X_USER_ID", "12345")
+    get_settings.cache_clear()
+    mock_x.owned_posts = [
+        OwnedPost(
+            x_post_id="1357913579",
+            text=post["content"],
+            created_at=datetime.now(UTC),
+            metrics={},
+        )
+    ]
+
+    response = client.post("/posts/reconcile-x-ids")
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["x_post_id"] == "1357913579"
 
 
 def test_automatic_reconcile_skips_when_similarity_is_low(client, mock_x, monkeypatch):

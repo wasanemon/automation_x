@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from time import sleep
 from typing import Any
 
@@ -65,9 +65,9 @@ class XApiClient:
             "exclude": "retweets,replies",
         }
         if start_time:
-            params["start_time"] = start_time.isoformat().replace("+00:00", "Z")
+            params["start_time"] = _x_rfc3339(start_time)
         if end_time:
-            params["end_time"] = end_time.isoformat().replace("+00:00", "Z")
+            params["end_time"] = _x_rfc3339(end_time)
 
         data = self._request("GET", f"/2/users/{self.settings.x_user_id}/tweets", params=params)
         return [self._owned_post_from_payload(item) for item in data.get("data", [])]
@@ -180,3 +180,8 @@ class XApiClient:
             "quotes": int(public_metrics.get("quote_count") or 0),
             "bookmarks": int(public_metrics.get("bookmark_count") or 0),
         }
+
+
+def _x_rfc3339(value: datetime) -> str:
+    value = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return value.isoformat(timespec="seconds").replace("+00:00", "Z")

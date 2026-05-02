@@ -128,6 +128,77 @@ curl http://localhost:8000/metrics/summary \
 
 今回取得するのはBearer Tokenで読めるpublic metricsのみです。`impression_count`, `like_count`, `retweet_count`, `reply_count`, `quote_count`, `bookmark_count` を保存します。URL clicks、profile clicks、engagements、follows、`organic_metrics`、`promoted_metrics`、`non_public_metrics` は今回は対象外です。これらは将来、適切なuser context認証を追加してから扱います。
 
+## 自動運転MVP: 1 cycleで回す
+
+`POST /automation/run-cycle` は、手動curlの連続を1回分のcycleとして実行します。
+
+```text
+idea -> draft -> evaluate -> approval判定 -> schedule候補またはschedule -> reconcile -> metrics collect -> automation_runs保存
+```
+
+前提:
+
+- テスト用Xアカウントだけで使います。
+- X APIはread-onlyです。owned post lookupとpublic metrics取得だけを行います。
+- Xへの投稿はPostiz経由だけです。
+- 自動返信、メンション、いいね、フォロー、リポスト、DM、keyword outreachは実装していません。
+- 初期設定ではlive schedulingは走りません。
+
+dry-run cycle:
+
+```bash
+curl http://localhost:8000/automation/status \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY"
+
+curl -X POST http://localhost:8000/automation/run-cycle \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY"
+```
+
+CLIからcronやn8nのExecute Command nodeで呼ぶ場合:
+
+```bash
+export GROWTH_AGENT_BASE_URL=http://localhost:8000
+python -m growth_agent.scripts.run_cycle
+```
+
+live scheduling cycleを許可する条件:
+
+- `AUTO_POSTING_ENABLED=true`
+- `SCHEDULING_DRY_RUN=false`
+- `AUTOMATION_KILL_SWITCH=false`
+- Postizの `POSTIZ_BASE_URL`, `POSTIZ_API_KEY`, `POSTIZ_X_INTEGRATION_ID` が設定済み
+- evaluator scoreが `AUTO_SCHEDULE_SCORE_THRESHOLD` 以上
+- `risk_level=low`
+- duplicate / near-duplicateではない
+- `requires_approval=false`
+- schedule済みdraftではない
+- 投稿頻度制限内
+
+`AUTO_POSTING_ENABLED=false` の場合、automationはschedule候補としてlocal post recordを作りますが、Postiz live schedulingは呼びません。`SCHEDULING_DRY_RUN=true` の場合もPostizは呼びません。Postizが呼ばれるのは `AUTO_POSTING_ENABLED=true` かつ `SCHEDULING_DRY_RUN=false` かつ kill switch off の時だけです。
+
+kill switch:
+
+```bash
+AUTOMATION_KILL_SWITCH=true
+```
+
+この状態では `POST /automation/run-cycle` はdraft生成、evaluate、reconcile、metrics collectは進めますが、scheduleは実行しません。レスポンスには `kill_switch_active=true` が入ります。
+
+投稿頻度制限:
+
+- `MAX_AUTO_SCHEDULE_PER_CYCLE=1`
+- `MAX_AUTO_SCHEDULE_PER_DAY=3`
+- `MIN_HOURS_BETWEEN_AUTO_POSTS=4`
+- `DEFAULT_SCHEDULE_DELAY_MINUTES=30`
+
+cron例:
+
+```cron
+*/30 * * * * cd /path/to/automation_x && GROWTH_AGENT_BASE_URL=http://localhost:8000 .venv/bin/python -m growth_agent.scripts.run_cycle
+```
+
+n8nでは Cron node -> HTTP Request `GET /automation/status` -> kill switch確認 -> HTTP Request `POST /automation/run-cycle` -> approval_required通知 -> `GET /metrics/summary` -> 週次 `GET /reports/weekly` の流れを推奨します。詳しくは [docs/n8n_workflows.md](docs/n8n_workflows.md) を参照してください。
+
 ## Environment Variables
 
 | Variable | Purpose | Required when |
@@ -137,6 +208,13 @@ curl http://localhost:8000/metrics/summary \
 | `TESTING` | Allows tests to bypass API auth only when `true`. | tests |
 | `GROWTH_AGENT_API_KEY` | API key for protected endpoints. Generated when missing. | all non-health API calls |
 | `SCHEDULING_DRY_RUN` | When `true`, creates local post records and does not call Postiz. | scheduling |
+| `AUTO_POSTING_ENABLED` | Extra automation gate. Must be `true` before automation may call Postiz live. | automation live scheduling |
+| `AUTOMATION_KILL_SWITCH` | Stops automation scheduling when `true`. Draft/evaluate/reconcile/metrics may still run. | automation |
+| `MAX_AUTO_SCHEDULE_PER_CYCLE` | Per-cycle cap for automation schedules. Default `1`. | automation |
+| `MAX_AUTO_SCHEDULE_PER_DAY` | Daily cap for automation schedules. Default `3`. | automation |
+| `MIN_HOURS_BETWEEN_AUTO_POSTS` | Minimum spacing between automation scheduled times. Default `4`. | automation |
+| `DEFAULT_SCHEDULE_DELAY_MINUTES` | Default delay before the next automation scheduled post. Default `30`. | automation |
+| `GROWTH_AGENT_BASE_URL` | Base URL used by `python -m growth_agent.scripts.run_cycle`. | CLI |
 | `POSTIZ_BASE_URL` | Full Postiz Public API base URL. | live Postiz test |
 | `POSTIZ_API_KEY` | Postiz API key. Mask in all output. | live Postiz test |
 | `POSTIZ_X_INTEGRATION_ID` | Postiz integration ID for the test X account. | live Postiz test |

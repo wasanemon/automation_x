@@ -163,7 +163,13 @@ def metrics_summary(db: Session) -> dict[str, int | float | list[dict[str, int |
         snapshots,
         key=lambda snapshot: (
             snapshot.impressions,
-            snapshot.likes + snapshot.replies + snapshot.reposts + snapshot.bookmarks,
+            (
+                snapshot.likes
+                + snapshot.replies
+                + snapshot.reposts
+                + snapshot.quotes
+                + snapshot.bookmarks
+            ),
             snapshot.post_id,
         ),
         reverse=True,
@@ -187,6 +193,7 @@ def metrics_summary(db: Session) -> dict[str, int | float | list[dict[str, int |
                 "likes": snapshot.likes,
                 "replies": snapshot.replies,
                 "reposts": snapshot.reposts,
+                "quotes": snapshot.quotes,
                 "bookmarks": snapshot.bookmarks,
             }
             for snapshot in top_posts
