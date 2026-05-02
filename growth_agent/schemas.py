@@ -205,29 +205,46 @@ class AutomationRunHistoryResponse(BaseModel):
     finished_at: datetime | None
     status: str
     dry_run: bool
+    auto_posting_enabled: bool
+    kill_switch_active: bool
     created_drafts_count: int
     evaluated_drafts_count: int
+    auto_schedule_candidates_count: int
     auto_scheduled_count: int
+    dry_run_scheduled_count: int
+    live_scheduled_count: int
     approval_required_count: int
     rejected_count: int
+    duplicate_skipped_count: int
+    frequency_limited_count: int
     reconciled_count: int
     metrics_collected_count: int
+    metrics_skipped_count: int
     skipped_count: int
     error_json: list[dict[str, Any]]
+    errors_json: list[str]
     summary_json: dict[str, Any]
+    metadata_json: dict[str, Any]
 
 
 class AutomationCycleResponse(BaseModel):
     cycle_id: int
     created_drafts_count: int
     evaluated_drafts_count: int
+    auto_schedule_candidates_count: int
     auto_scheduled_count: int
+    dry_run_scheduled_count: int
+    live_scheduled_count: int
     approval_required_count: int
     rejected_count: int
+    duplicate_skipped_count: int
+    frequency_limited_count: int
     reconciled_count: int
     metrics_collected_count: int
+    metrics_skipped_count: int
     skipped_count: int
-    errors: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    error_details: list[dict[str, Any]] = Field(default_factory=list)
     next_recommended_action: str
     dry_run: bool
     kill_switch_active: bool
@@ -238,9 +255,13 @@ class AutomationStatusResponse(BaseModel):
     scheduling_dry_run: bool
     kill_switch_active: bool
     today_auto_scheduled_count: int
+    max_auto_schedule_per_day: int
+    max_auto_schedule_per_cycle: int
+    min_hours_between_auto_posts: int
     next_post_available_at: datetime | None
     approval_waiting_draft_count: int
     unreconciled_post_count: int
     metrics_missing_post_count: int
     last_automation_run: AutomationRunHistoryResponse | None
+    warnings: list[str]
     system_warnings: list[str]

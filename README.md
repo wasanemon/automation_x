@@ -154,6 +154,29 @@ curl -X POST http://localhost:8000/automation/run-cycle \
   -H "X-API-Key: $GROWTH_AGENT_API_KEY"
 ```
 
+`GET /automation/status` returns the live guardrails without secret values:
+
+- `auto_posting_enabled`
+- `scheduling_dry_run`
+- `kill_switch_active`
+- `today_auto_scheduled_count`
+- `max_auto_schedule_per_day`
+- `max_auto_schedule_per_cycle`
+- `min_hours_between_auto_posts`
+- `warnings`
+
+`POST /automation/run-cycle` separates dry-run and live scheduling counts:
+
+- `auto_schedule_candidates_count`
+- `dry_run_scheduled_count`
+- `live_scheduled_count`
+- `auto_scheduled_count` (`dry_run_scheduled_count + live_scheduled_count`)
+- `approval_required_count`
+- `duplicate_skipped_count`
+- `frequency_limited_count`
+- `metrics_skipped_count`
+- `errors`
+
 CLIからcronやn8nのExecute Command nodeで呼ぶ場合:
 
 ```bash
@@ -198,6 +221,14 @@ cron例:
 ```
 
 n8nでは Cron node -> HTTP Request `GET /automation/status` -> kill switch確認 -> HTTP Request `POST /automation/run-cycle` -> approval_required通知 -> `GET /metrics/summary` -> 週次 `GET /reports/weekly` の流れを推奨します。詳しくは [docs/n8n_workflows.md](docs/n8n_workflows.md) を参照してください。
+
+Importable workflow JSON files are available in [n8n](n8n):
+
+- `growth_agent_n8n_dry_run_smoke_test.json`
+- `growth_agent_n8n_live_cycle.json`
+- `growth_agent_n8n_metrics_catchup.json`
+
+They reference `GROWTH_AGENT_BASE_URL` and `GROWTH_AGENT_API_KEY` from n8n env vars. Do not put secret values directly into workflow JSON.
 
 ## Environment Variables
 
@@ -260,6 +291,12 @@ Docker Compose:
 cp .env.example .env
 python3 scripts/check_config.py
 docker compose up --build
+```
+
+Apply migrations when running against a persistent database:
+
+```bash
+alembic upgrade head
 ```
 
 The app listens on `http://localhost:8000`.

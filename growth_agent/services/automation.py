@@ -26,11 +26,17 @@ SCHEDULABLE_DRAFT_STATUSES = {"evaluated", "approved"}
 class CycleCounters:
     created_drafts: int = 0
     evaluated_drafts: int = 0
+    auto_schedule_candidates: int = 0
     auto_scheduled: int = 0
+    dry_run_scheduled: int = 0
+    live_scheduled: int = 0
     approval_required: int = 0
     rejected: int = 0
+    duplicate_skipped: int = 0
+    frequency_limited: int = 0
     reconciled: int = 0
     metrics_collected: int = 0
+    metrics_skipped: int = 0
     skipped: int = 0
 
 
@@ -51,8 +57,12 @@ def run_automation_cycle(
     run = AutomationRun(
         status="running",
         dry_run=not live_scheduling_allowed,
+        auto_posting_enabled=settings.auto_posting_enabled,
+        kill_switch_active=settings.automation_kill_switch,
         error_json=[],
+        errors_json=[],
         summary_json={},
+        metadata_json={},
     )
     db.add(run)
     db.commit()
@@ -81,8 +91,10 @@ def run_automation_cycle(
         counters.evaluated_drafts = len(evaluated_drafts)
         counters.approval_required += _mark_approval_required(db, evaluated_drafts)
         counters.rejected += sum(1 for draft in evaluated_drafts if draft.status == "rejected")
+        counters.duplicate_skipped += _duplicate_skipped_draft_count(db)
 
         schedule_candidates = _schedule_candidates(db, settings)
+        counters.auto_schedule_candidates = len(schedule_candidates)
         _schedule_eligible_drafts(
             db,
             postiz_client,
@@ -103,12 +115,14 @@ def run_automation_cycle(
         if settings.x_bearer_token:
             metrics_outcome = collect_metrics(db, x_client)
             counters.metrics_collected = metrics_outcome.collected
+            counters.metrics_skipped = metrics_outcome.skipped
             counters.skipped += metrics_outcome.skipped
             for item in metrics_outcome.results:
                 if item.status == "error":
                     errors.append(_error("metrics", item.reason or "Metrics failed.", settings))
         else:
             skipped_metrics = count_metric_candidates(db)
+            counters.metrics_skipped = skipped_metrics
             counters.skipped += skipped_metrics
             if skipped_metrics:
                 summary["metrics"] = {
@@ -127,13 +141,20 @@ def run_automation_cycle(
         cycle_id=run.id,
         created_drafts_count=run.created_drafts_count,
         evaluated_drafts_count=run.evaluated_drafts_count,
+        auto_schedule_candidates_count=run.auto_schedule_candidates_count,
         auto_scheduled_count=run.auto_scheduled_count,
+        dry_run_scheduled_count=run.dry_run_scheduled_count,
+        live_scheduled_count=run.live_scheduled_count,
         approval_required_count=run.approval_required_count,
         rejected_count=run.rejected_count,
+        duplicate_skipped_count=run.duplicate_skipped_count,
+        frequency_limited_count=run.frequency_limited_count,
         reconciled_count=run.reconciled_count,
         metrics_collected_count=run.metrics_collected_count,
+        metrics_skipped_count=run.metrics_skipped_count,
         skipped_count=run.skipped_count,
-        errors=run.error_json,
+        errors=run.errors_json,
+        error_details=run.error_json,
         next_recommended_action=_next_recommended_action(run, settings),
         dry_run=run.dry_run,
         kill_switch_active=settings.automation_kill_switch,
@@ -143,17 +164,22 @@ def run_automation_cycle(
 def automation_status(db: Session, settings: Settings) -> AutomationStatusResponse:
     limits = _schedule_limits(db, settings)
     last_run = db.scalar(select(AutomationRun).order_by(AutomationRun.started_at.desc()))
+    warnings = _system_warnings(db, settings, limits)
     return AutomationStatusResponse(
         auto_posting_enabled=settings.auto_posting_enabled,
         scheduling_dry_run=settings.scheduling_dry_run,
         kill_switch_active=settings.automation_kill_switch,
         today_auto_scheduled_count=limits.today_auto_scheduled_count,
+        max_auto_schedule_per_day=settings.max_auto_schedule_per_day,
+        max_auto_schedule_per_cycle=settings.max_auto_schedule_per_cycle,
+        min_hours_between_auto_posts=settings.min_hours_between_auto_posts,
         next_post_available_at=limits.next_post_available_at,
         approval_waiting_draft_count=_approval_waiting_draft_count(db),
         unreconciled_post_count=_unreconciled_post_count(db),
         metrics_missing_post_count=_metrics_missing_post_count(db),
         last_automation_run=last_run,
-        system_warnings=_system_warnings(db, settings, limits),
+        warnings=warnings,
+        system_warnings=warnings,
     )
 
 
@@ -165,13 +191,43 @@ def _create_drafts_from_next_idea(db: Session) -> list[Draft]:
         .limit(1)
     )
     if idea is None:
-        return []
+        if _has_pending_draft_work(db):
+            return []
+        idea = _create_default_idea(db)
 
     drafts = create_drafts_for_idea(db, idea, AUTOMATION_DRAFT_BATCH_SIZE)
     idea.status = "processed"
     db.add(idea)
     db.commit()
     return drafts
+
+
+def _has_pending_draft_work(db: Session) -> bool:
+    return bool(
+        db.scalar(
+            select(Draft.id)
+            .where(Draft.status.in_(("generated", "evaluated", "approved", "approval_required")))
+            .limit(1)
+        )
+    )
+
+
+def _create_default_idea(db: Session) -> Idea:
+    now = datetime.now(UTC)
+    idea = Idea(
+        source="automation",
+        title=f"Automation loop note {now.date().isoformat()}",
+        description=(
+            "Share one practical note about keeping a small operating loop observable and safe."
+        ),
+        audience="builders",
+        status="new",
+        metadata_json={"created_by": "automation_default"},
+    )
+    db.add(idea)
+    db.commit()
+    db.refresh(idea)
+    return idea
 
 
 def _evaluate_generated_drafts(
@@ -209,6 +265,19 @@ def _mark_approval_required(db: Session, drafts: list[Draft]) -> int:
     if count:
         db.commit()
     return count
+
+
+def _duplicate_skipped_draft_count(db: Session) -> int:
+    existing_post = select(Post.id).where(Post.draft_id == Draft.id).exists()
+    return int(
+        db.scalar(
+            select(func.count(Draft.id))
+            .where(Draft.duplicate_of_draft_id.is_not(None))
+            .where(Draft.status.not_in(("rejected", "scheduled", "scheduling")))
+            .where(~existing_post)
+        )
+        or 0
+    )
 
 
 def _schedule_candidates(db: Session, settings: Settings) -> list[Draft]:
@@ -255,6 +324,7 @@ def _schedule_eligible_drafts(
 
     if settings.max_auto_schedule_per_cycle <= 0:
         counters.skipped += len(candidates)
+        counters.frequency_limited += len(candidates)
         for draft in candidates:
             summary["schedule_decisions"].append(
                 {
@@ -268,6 +338,7 @@ def _schedule_eligible_drafts(
     limits = _schedule_limits(db, settings)
     if settings.max_auto_schedule_per_day <= 0:
         counters.skipped += len(candidates)
+        counters.frequency_limited += len(candidates)
         for draft in candidates:
             summary["schedule_decisions"].append(
                 {
@@ -283,6 +354,7 @@ def _schedule_eligible_drafts(
     for draft in candidates:
         if scheduled_this_cycle >= settings.max_auto_schedule_per_cycle:
             counters.skipped += 1
+            counters.frequency_limited += 1
             summary["schedule_decisions"].append(
                 {
                     "draft_id": draft.id,
@@ -296,6 +368,7 @@ def _schedule_eligible_drafts(
             >= settings.max_auto_schedule_per_day
         ):
             counters.skipped += 1
+            counters.frequency_limited += 1
             summary["schedule_decisions"].append(
                 {
                     "draft_id": draft.id,
@@ -322,7 +395,11 @@ def _schedule_eligible_drafts(
             )
             continue
 
-        counters.auto_scheduled += 1
+        if post.dry_run:
+            counters.dry_run_scheduled += 1
+        else:
+            counters.live_scheduled += 1
+        counters.auto_scheduled = counters.dry_run_scheduled + counters.live_scheduled
         scheduled_this_cycle += 1
         last_scheduled_for = scheduled_for
         summary["scheduled_posts"].append(
@@ -527,21 +604,28 @@ def _system_warnings(
         warnings.append("AUTOMATION_KILL_SWITCH=true; automation scheduling is paused.")
     if limits.next_post_available_at is None:
         warnings.append("Auto scheduling is disabled by the current per-cycle or daily limit.")
-    if settings.auto_posting_enabled and not settings.scheduling_dry_run:
-        missing_postiz = [
-            name
-            for name, value in (
-                ("POSTIZ_BASE_URL", settings.postiz_base_url),
-                ("POSTIZ_API_KEY", settings.postiz_api_key),
-                ("POSTIZ_X_INTEGRATION_ID", settings.postiz_x_integration_id),
-            )
-            if not value
-        ]
-        if missing_postiz:
-            warnings.append(
-                "Postiz live scheduling is enabled but required Postiz settings are missing."
-            )
-    if _unreconciled_post_count(db) and (not settings.x_bearer_token or not settings.x_user_id):
+    missing_postiz = [
+        name
+        for name, value in (
+            ("POSTIZ_BASE_URL", settings.postiz_base_url),
+            ("POSTIZ_API_KEY", settings.postiz_api_key),
+            ("POSTIZ_X_INTEGRATION_ID", settings.postiz_x_integration_id),
+        )
+        if not value
+    ]
+    if missing_postiz:
+        warnings.append(f"POSTIZ_* missing: {', '.join(missing_postiz)}.")
+    missing_x = [
+        name
+        for name, value in (
+            ("X_BEARER_TOKEN", settings.x_bearer_token),
+            ("X_USER_ID", settings.x_user_id),
+        )
+        if not value
+    ]
+    if missing_x:
+        warnings.append(f"X_* missing: {', '.join(missing_x)}; reconcile/metrics will skip.")
+    if _unreconciled_post_count(db) and missing_x:
         warnings.append("X reconcile credentials are missing; x_post_id lookup will skip.")
     if _metrics_missing_post_count(db) and not settings.x_bearer_token:
         warnings.append("X_BEARER_TOKEN is missing; metrics collection will skip.")
@@ -556,16 +640,29 @@ def _finish_run(
     summary: dict[str, Any],
 ) -> None:
     run.finished_at = datetime.now(UTC)
+    run.auto_scheduled_count = counters.dry_run_scheduled + counters.live_scheduled
     run.created_drafts_count = counters.created_drafts
     run.evaluated_drafts_count = counters.evaluated_drafts
-    run.auto_scheduled_count = counters.auto_scheduled
+    run.auto_schedule_candidates_count = counters.auto_schedule_candidates
+    run.dry_run_scheduled_count = counters.dry_run_scheduled
+    run.live_scheduled_count = counters.live_scheduled
     run.approval_required_count = counters.approval_required
     run.rejected_count = counters.rejected
+    run.duplicate_skipped_count = counters.duplicate_skipped
+    run.frequency_limited_count = counters.frequency_limited
     run.reconciled_count = counters.reconciled
     run.metrics_collected_count = counters.metrics_collected
+    run.metrics_skipped_count = counters.metrics_skipped
     run.skipped_count = counters.skipped
     run.error_json = errors
+    run.errors_json = _error_messages(errors)
     run.summary_json = summary
+    run.metadata_json = {
+        "auto_posting_enabled": run.auto_posting_enabled,
+        "kill_switch_active": run.kill_switch_active,
+        "dry_run": run.dry_run,
+        "live_scheduling_allowed": not run.dry_run,
+    }
     db.add(run)
     db.commit()
     db.refresh(run)
@@ -605,6 +702,18 @@ def _error(stage: str, message: str, settings: Settings, **extra: Any) -> dict[s
         if secret:
             safe_message = safe_message.replace(secret, "****")
     return {"stage": stage, "message": safe_message, **extra}
+
+
+def _error_messages(errors: list[dict[str, Any]]) -> list[str]:
+    messages: list[str] = []
+    for error in errors:
+        stage = error.get("stage")
+        message = error.get("message")
+        if stage and message:
+            messages.append(f"{stage}: {message}")
+        elif message:
+            messages.append(str(message))
+    return messages
 
 
 def _iso_utc(value: datetime) -> str:

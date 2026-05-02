@@ -108,6 +108,71 @@ The cycle response is designed for branching:
 - `errors` is not empty: notify ops and keep automation conservative.
 - `next_recommended_action`: include in notification text.
 
+## Importable Workflow JSON
+
+This repo includes three n8n workflows under `n8n/`:
+
+- `growth_agent_n8n_dry_run_smoke_test.json`
+- `growth_agent_n8n_live_cycle.json`
+- `growth_agent_n8n_metrics_catchup.json`
+
+Import them from n8n with **Import from File**. Review the nodes before activation, then set these n8n environment variables or equivalent credentials:
+
+- `GROWTH_AGENT_BASE_URL`: Growth Agent API base URL, for example `http://localhost:8000`.
+- `GROWTH_AGENT_API_KEY`: API key sent as `X-API-Key`.
+
+Do not paste `GROWTH_AGENT_API_KEY`, Postiz keys, or X bearer tokens into workflow JSON. Keep Postiz and X credentials in the Growth Agent `.env` or your deployment secret store.
+
+### Dry-Run Smoke Test
+
+Use `growth_agent_n8n_dry_run_smoke_test.json` first.
+
+Expected Growth Agent env:
+
+```bash
+AUTO_POSTING_ENABLED=false
+SCHEDULING_DRY_RUN=true
+AUTOMATION_KILL_SWITCH=false
+```
+
+Run the workflow manually. It checks `GET /automation/status` and only calls `POST /automation/run-cycle` when `kill_switch_active=false` and `scheduling_dry_run=true`. A successful dry-run may create local `dry_run=true` post records, but Postiz is not called.
+
+### Live Test Cycle
+
+Use `growth_agent_n8n_live_cycle.json` only with the test X account connected through Postiz.
+
+Expected Growth Agent env:
+
+```bash
+AUTO_POSTING_ENABLED=true
+SCHEDULING_DRY_RUN=false
+AUTOMATION_KILL_SWITCH=false
+```
+
+The workflow runs every 6 hours by default. It gates on `kill_switch_active=false`, `auto_posting_enabled=true`, and `scheduling_dry_run=false`. Its final summary includes `needs_attention=true` when `approval_required_count > 0` or `errors.length > 0`, so you can attach Slack, email, or Linear notification nodes after the summary.
+
+### Metrics Catch-Up
+
+Use `growth_agent_n8n_metrics_catchup.json` to reconcile and collect metrics outside the posting cycle.
+
+The workflow runs every 6 hours by default. It stops when `kill_switch_active=true`; otherwise it calls:
+
+1. `POST /posts/reconcile-x-ids` with `{"lookback_days": 7, "mappings": []}`
+2. `POST /metrics/collect` with `{"post_ids": null}`
+3. `GET /metrics/summary`
+
+If X credentials are missing, reconcile and metrics collection skip safely. If Postiz credentials are missing, dry-run and metrics-only paths still work; live scheduling remains blocked or fails clearly without printing secrets.
+
+### Kill Switch
+
+Set this in Growth Agent and restart/redeploy:
+
+```bash
+AUTOMATION_KILL_SWITCH=true
+```
+
+`POST /automation/run-cycle` will not create schedule records or call Postiz while the kill switch is active. Draft generation, evaluation, reconcile, and metrics collection can still run safely.
+
 ## Feedback and Weekly Report
 
 Run `POST /feedback/run` weekly or after enough posts have metrics. Fetch `GET /feedback/playbook` before the next draft generation batch. Send `GET /reports/weekly` to the team.

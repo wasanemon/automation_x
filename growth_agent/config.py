@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     automation_kill_switch: bool = False
     max_auto_schedule_per_cycle: int = Field(default=1, ge=0, le=20)
     max_auto_schedule_per_day: int = Field(default=3, ge=0, le=100)
-    min_hours_between_auto_posts: float = Field(default=4, ge=0, le=24 * 14)
+    min_hours_between_auto_posts: int = Field(default=4, ge=0, le=24 * 14)
     default_schedule_delay_minutes: int = Field(default=30, ge=0, le=24 * 7 * 60)
 
     @property
