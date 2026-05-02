@@ -61,7 +61,7 @@ class Post(Base, TimestampMixin):
     __tablename__ = "posts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    draft_id: Mapped[int] = mapped_column(ForeignKey("drafts.id"))
+    draft_id: Mapped[int] = mapped_column(ForeignKey("drafts.id"), unique=True)
     content: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(40), default="scheduled", index=True)
     postiz_post_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
@@ -70,6 +70,7 @@ class Post(Base, TimestampMixin):
     scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     has_url: Mapped[bool] = mapped_column(Boolean, default=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=True)
 
     draft: Mapped[Draft] = relationship(back_populates="posts")
     metrics: Mapped[list["MetricSnapshot"]] = relationship(back_populates="post")

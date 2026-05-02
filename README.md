@@ -2,11 +2,112 @@
 
 A production-minded MVP service for a semi-autonomous X marketing Growth Agent.
 
-The service owns the growth loop:
+The service owns this loop:
 
 idea collection -> draft generation -> evaluation and safety gate -> scheduling or human approval -> post tracking -> metrics collection -> feedback/playbook update -> next draft generation.
 
 Postiz is the publishing/scheduling layer. n8n is the workflow and human-approval layer. This repo is the Growth Agent service.
+
+## Quick Start: まずdry-runで動かす
+
+Postiz系のenvはユーザー入力済みである前提です。Postiz以外のMVP用envは `scripts/check_config.py` が安全に補完できます。
+
+```bash
+cp .env.example .env
+python3 scripts/check_config.py
+docker compose up --build
+```
+
+別ターミナルでAPIキーを読み込みます。値は表示しないでください。
+
+```bash
+export GROWTH_AGENT_API_KEY="$(grep '^GROWTH_AGENT_API_KEY=' .env | cut -d= -f2-)"
+```
+
+Health checkは認証なしで確認できます。
+
+```bash
+curl http://localhost:8000/health
+```
+
+dry-runでは `SCHEDULING_DRY_RUN=true` のままにします。Postizは呼ばれず、ローカルDBに `dry_run=true` のpost recordが作成されます。
+
+```bash
+curl -X POST http://localhost:8000/ideas/ingest \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Launch lesson","description":"Turn onboarding notes into one useful post.","source":"manual","audience":"founders"}'
+
+curl -X POST http://localhost:8000/drafts/generate \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"idea_id":1,"count":1}'
+
+curl -X POST http://localhost:8000/drafts/1/evaluate \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY"
+
+curl -X POST http://localhost:8000/drafts/1/approve \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"reviewer":"test","note":"Dry-run approval."}'
+
+curl -X POST http://localhost:8000/drafts/1/schedule \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"scheduled_for":"2026-05-02T09:00:00Z"}'
+
+curl http://localhost:8000/posts \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY"
+```
+
+## Quick Start: Postiz + テスト用Xアカウントで予約投稿する
+
+`.env` に以下が入っていることを確認します。値はログやREADMEに書かないでください。
+
+- `POSTIZ_BASE_URL`
+- `POSTIZ_API_KEY`
+- `POSTIZ_X_INTEGRATION_ID`
+- `TEST_X_ACCOUNT_HANDLE`
+
+`POSTIZ_BASE_URL` は完全なPublic API base URLです。例: `https://api.postiz.com/public/v1`。アプリはこのbase URLに `/posts` だけを追加します。
+
+```bash
+python3 scripts/check_config.py
+```
+
+`Postiz test scheduling config: ready` になったら、`.env` の `SCHEDULING_DRY_RUN=false` に変更してアプリを再起動します。
+
+```bash
+docker compose up --build
+```
+
+その後、dry-runと同じ `idea -> draft -> evaluate -> approve -> schedule -> posts確認` を実行します。scheduleレスポンスで `dry_run=false` かつ `postiz_post_id` が入っていれば、Postiz経由の予約作成まで進んでいます。
+
+## Environment Variables
+
+| Variable | Purpose | Required when |
+| --- | --- | --- |
+| `DATABASE_URL` | SQLAlchemy database URL. Compose overrides this to the included PostgreSQL service. | all modes |
+| `APP_ENV` | Runtime label. | optional |
+| `TESTING` | Allows tests to bypass API auth only when `true`. | tests |
+| `GROWTH_AGENT_API_KEY` | API key for protected endpoints. Generated when missing. | all non-health API calls |
+| `SCHEDULING_DRY_RUN` | When `true`, creates local post records and does not call Postiz. | scheduling |
+| `POSTIZ_BASE_URL` | Full Postiz Public API base URL. | live Postiz test |
+| `POSTIZ_API_KEY` | Postiz API key. Mask in all output. | live Postiz test |
+| `POSTIZ_X_INTEGRATION_ID` | Postiz integration ID for the test X account. | live Postiz test |
+| `TEST_X_ACCOUNT_HANDLE` | Human-readable test account guardrail. | live Postiz test |
+| `OWNED_DOMAINS` | Comma-separated owned domains for lower-risk URL posts. | optional |
+| `SAFE_PUBLIC_READS` | Allows non-health GET endpoints without auth only when explicitly `true`. | optional |
+| `AUTO_APPLY_TENTATIVE_RULES` | Reserved for future tentative-rule automation. Default off. | optional |
+| `X_API_BASE_URL` | X API base URL. | metrics |
+| `X_BEARER_TOKEN` | Read-only X token for owned lookup and metrics. | metrics |
+| `X_USER_ID` | Owned X user ID. | metrics lookup |
+| `REQUEST_TIMEOUT_SECONDS` | External HTTP timeout. | external calls |
+| `MAX_EXTERNAL_RETRIES` | Bounded retry count. | external calls |
+| `DUPLICATE_SIMILARITY_THRESHOLD` | Near-duplicate threshold before scheduling. | scheduling |
+| `AUTO_SCHEDULE_SCORE_THRESHOLD` | Minimum score for auto-scheduling low-risk drafts. | scheduling |
+
+X credentials are not required for app startup, dry-run, or Postiz scheduling. If they are missing, metrics collection skips safely.
 
 ## Setup
 
@@ -19,10 +120,11 @@ Prerequisites:
 Local install:
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
+python3 scripts/check_config.py
 alembic upgrade head
 uvicorn growth_agent.main:app --reload
 ```
@@ -31,147 +133,82 @@ Docker Compose:
 
 ```bash
 cp .env.example .env
+python3 scripts/check_config.py
 docker compose up --build
 ```
 
 The app listens on `http://localhost:8000`.
 
-## Environment Variables
+## Additional API Examples
 
-| Variable | Purpose |
-| --- | --- |
-| `DATABASE_URL` | SQLAlchemy database URL. Compose uses PostgreSQL. |
-| `POSTIZ_BASE_URL` | Postiz public API base URL, for example `https://postiz.example.com/public/v1`. |
-| `POSTIZ_API_KEY` | Postiz API key. Keep it out of code and logs. |
-| `POSTIZ_X_INTEGRATION_ID` | Postiz integration ID for the owned X account. |
-| `X_API_BASE_URL` | X API base URL. Defaults to `https://api.x.com`. |
-| `X_BEARER_TOKEN` | Read-only token for owned post lookup and metrics collection. |
-| `X_USER_ID` | Owned X user ID used for timeline lookup. |
-| `HTTP_TIMEOUT_SECONDS` | External HTTP timeout. |
-| `HTTP_MAX_RETRIES` | Bounded retry count for transient external failures. |
-| `DUPLICATE_SIMILARITY_THRESHOLD` | Near-duplicate threshold before scheduling. |
-| `AUTO_SCHEDULE_SCORE_THRESHOLD` | Minimum score for auto-scheduling low-risk drafts. |
-
-## Quality Checks
+Reject:
 
 ```bash
-pytest
-ruff check .
-```
-
-Tests override Postiz and X clients, so no real external API calls are made.
-
-## Curl Examples
-
-Health:
-
-```bash
-curl http://localhost:8000/health
-```
-
-Ingest an idea:
-
-```bash
-curl -X POST http://localhost:8000/ideas/ingest \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"Launch lesson","description":"Turn onboarding notes into one useful post.","source":"n8n","audience":"founders"}'
-```
-
-List ideas:
-
-```bash
-curl http://localhost:8000/ideas
-```
-
-Generate drafts:
-
-```bash
-curl -X POST http://localhost:8000/drafts/generate \
-  -H 'Content-Type: application/json' \
-  -d '{"idea_id":1,"count":3}'
-```
-
-Evaluate a draft:
-
-```bash
-curl -X POST http://localhost:8000/drafts/1/evaluate
-```
-
-Approve or reject:
-
-```bash
-curl -X POST http://localhost:8000/drafts/1/approve \
-  -H 'Content-Type: application/json' \
-  -d '{"reviewer":"marketing","note":"Safe for this week."}'
-
 curl -X POST http://localhost:8000/drafts/1/reject \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"reviewer":"marketing","reason":"Too speculative."}'
-```
-
-Schedule:
-
-```bash
-curl -X POST http://localhost:8000/drafts/1/schedule \
-  -H 'Content-Type: application/json' \
-  -d '{"scheduled_for":"2026-05-02T09:00:00Z"}'
-```
-
-List posts:
-
-```bash
-curl http://localhost:8000/posts
 ```
 
 Reconcile X IDs manually:
 
 ```bash
 curl -X POST http://localhost:8000/posts/reconcile-x-ids \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"mappings":[{"post_id":1,"x_post_id":"1234567890"}]}'
-```
-
-Reconcile by owned X lookup:
-
-```bash
-curl -X POST http://localhost:8000/posts/reconcile-x-ids \
-  -H 'Content-Type: application/json' \
-  -d '{"lookback_days":7}'
 ```
 
 Collect metrics and summarize:
 
 ```bash
 curl -X POST http://localhost:8000/metrics/collect \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{}'
 
-curl http://localhost:8000/metrics/summary
+curl http://localhost:8000/metrics/summary \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY"
 ```
 
 Run feedback and view playbook:
 
 ```bash
-curl -X POST http://localhost:8000/feedback/run
-curl http://localhost:8000/feedback/playbook
+curl -X POST http://localhost:8000/feedback/run \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY"
+
+curl http://localhost:8000/feedback/playbook \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY"
 ```
 
 Weekly report:
 
 ```bash
-curl http://localhost:8000/reports/weekly
+curl http://localhost:8000/reports/weekly \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY"
 ```
-
-## n8n Workflow Outline
-
-1. Idea intake workflow receives form, Slack, CRM, or research inputs and calls `POST /ideas/ingest`.
-2. Draft workflow calls `POST /drafts/generate` and evaluates each draft with `POST /drafts/{id}/evaluate`.
-3. Safety branch auto-schedules low-risk drafts that pass thresholds, or sends approval-required drafts to a human approval task.
-4. Approval workflow calls `POST /drafts/{id}/approve` or `POST /drafts/{id}/reject`, then schedules approved drafts.
-5. Metrics workflow runs on a timer, reconciles X IDs, and calls `POST /metrics/collect`.
-6. Learning workflow calls `POST /feedback/run`, reads `GET /feedback/playbook`, and uses the playbook in the next generation cycle.
-7. Weekly workflow sends `GET /reports/weekly` to the team.
 
 ## Safety Boundaries
 
 This MVP never automates replies, mentions, likes, follows, retweets, DMs, or keyword-triggered outreach. X API usage is read-only and limited to owned post lookup and metrics collection.
+
+URL-bearing drafts and posts are marked `has_url=true`. If `OWNED_DOMAINS` is empty, URL-bearing drafts require human approval. External URLs, short links, pricing/legal language, strong claims, duplicate drafts, and near-duplicates require human approval or are blocked from scheduling.
+
+## Quality Checks
+
+```bash
+pytest
+ruff check .
+docker compose config --quiet
+```
+
+Tests override Postiz and X clients, so no real external API calls are made.
+Use `--quiet` for Compose validation because plain `docker compose config` can render environment values.
+
+## Troubleshooting
+
+- `401 Invalid or missing API key`: send `X-API-Key: $GROWTH_AGENT_API_KEY`, or confirm `GROWTH_AGENT_API_KEY` exists with `python3 scripts/check_config.py`.
+- `Postiz test scheduling config: not ready`: set the four Postiz env vars in `.env`, then rerun `python3 scripts/check_config.py`.
+- Schedule response has `dry_run=true`: `SCHEDULING_DRY_RUN=true`; set it to `false` only for test-account live scheduling.
+- Metrics returns `collected=0`: set `X_BEARER_TOKEN` and `X_USER_ID`, or leave metrics skipped during the Postiz scheduling smoke test.
+- URL drafts require approval: set `OWNED_DOMAINS` for owned URLs; external or shortened URLs still require human approval.

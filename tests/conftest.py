@@ -1,3 +1,4 @@
+import os
 from collections.abc import Generator
 from datetime import datetime
 
@@ -7,8 +8,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+os.environ.setdefault("TESTING", "true")
+
 from growth_agent.clients.postiz import ScheduledPostResult
 from growth_agent.clients.x_api import OwnedPost, XMetrics
+from growth_agent.config import get_settings
 from growth_agent.database import get_db
 from growth_agent.deps import get_postiz_client, get_x_client
 from growth_agent.main import app
@@ -30,6 +34,17 @@ class MockPostizClient:
             integration_id="integration-x",
             raw={"id": f"postiz-{len(self.calls)}"},
         )
+
+
+class FailingPostizClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def schedule_x_post(self, content: str, scheduled_for: datetime, has_url: bool):
+        from growth_agent.clients.postiz import ExternalClientError
+
+        self.calls += 1
+        raise ExternalClientError("Postiz unavailable in test.")
 
 
 class MockXClient:
@@ -71,9 +86,23 @@ def db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def reset_settings_cache(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setenv("SCHEDULING_DRY_RUN", "true")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 @pytest.fixture
 def mock_postiz() -> MockPostizClient:
     return MockPostizClient()
+
+
+@pytest.fixture
+def failing_postiz() -> FailingPostizClient:
+    return FailingPostizClient()
 
 
 @pytest.fixture

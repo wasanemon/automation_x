@@ -1,15 +1,17 @@
 services:
   app:
     build: .
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+psycopg://growth:growth@db:5432/growth_agent
-      APP_ENV: development
-      POSTIZ_BASE_URL: http://postiz:5000/public/v1
-      POSTIZ_API_KEY: ""
-      POSTIZ_X_INTEGRATION_ID: ""
-      X_API_BASE_URL: https://api.x.com
-      X_BEARER_TOKEN: ""
-      X_USER_ID: ""
+      APP_ENV: ${APP_ENV:-development}
+      TESTING: ${TESTING:-false}
+      SCHEDULING_DRY_RUN: ${SCHEDULING_DRY_RUN:-true}
+      REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-10}
+      MAX_EXTERNAL_RETRIES: ${MAX_EXTERNAL_RETRIES:-2}
+      SAFE_PUBLIC_READS: ${SAFE_PUBLIC_READS:-false}
+      AUTO_APPLY_TENTATIVE_RULES: ${AUTO_APPLY_TENTATIVE_RULES:-false}
     ports:
       - "8000:8000"
     depends_on:

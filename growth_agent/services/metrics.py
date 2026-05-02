@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -6,27 +6,36 @@ from sqlalchemy.orm import Session
 from growth_agent.clients.x_api import XApiClient
 from growth_agent.models import MetricSnapshot, Post
 
+PRIVATE_METRICS_MAX_AGE_DAYS = 30
+
 
 def collect_metrics(
     db: Session,
     x_client: XApiClient,
     post_ids: list[int] | None = None,
 ) -> tuple[int, int]:
-    query = select(Post).where(Post.x_post_id.is_not(None))
+    query = select(Post)
     if post_ids is not None:
         query = query.where(Post.id.in_(post_ids))
+    else:
+        query = query.where(Post.x_post_id.is_not(None))
 
     posts = list(db.scalars(query))
     collected = 0
     skipped = 0
+    now = datetime.now(UTC)
     for post in posts:
         if not post.x_post_id:
+            skipped += 1
+            continue
+        post_time = _post_metric_time(post)
+        if post_time is not None and now - post_time > timedelta(days=PRIVATE_METRICS_MAX_AGE_DAYS):
             skipped += 1
             continue
         metrics = x_client.get_post_metrics(post.x_post_id)
         snapshot = MetricSnapshot(
             post_id=post.id,
-            collected_at=datetime.now(UTC),
+            collected_at=now,
             impressions=metrics.impressions,
             likes=metrics.likes,
             replies=metrics.replies,
@@ -36,12 +45,30 @@ def collect_metrics(
         )
         post.status = "published"
         if post.published_at is None:
-            post.published_at = datetime.now(UTC)
+            post.published_at = now
         db.add(snapshot)
         db.add(post)
         collected += 1
     db.commit()
     return collected, skipped
+
+
+def count_metric_candidates(db: Session, post_ids: list[int] | None = None) -> int:
+    query = select(Post)
+    if post_ids is not None:
+        query = query.where(Post.id.in_(post_ids))
+    else:
+        query = query.where(Post.x_post_id.is_not(None))
+    return len(list(db.scalars(query)))
+
+
+def _post_metric_time(post: Post) -> datetime | None:
+    value = post.published_at or post.scheduled_for
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def latest_metric_snapshots(db: Session) -> list[MetricSnapshot]:

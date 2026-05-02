@@ -29,8 +29,14 @@ class PostizClient:
         scheduled_for: datetime,
         has_url: bool,
     ) -> ScheduledPostResult:
-        if not self.settings.postiz_api_key or not self.settings.postiz_x_integration_id:
-            raise ExternalClientError("Postiz API key and X integration ID must be configured.")
+        if (
+            not self.settings.postiz_base_url
+            or not self.settings.postiz_api_key
+            or not self.settings.postiz_x_integration_id
+        ):
+            raise ExternalClientError(
+                "Postiz base URL, API key, and X integration ID must be configured."
+            )
 
         payload = self._schedule_payload(content, scheduled_for, has_url)
         response_json = self._request("POST", "/posts", json=payload)
@@ -46,26 +52,35 @@ class PostizClient:
         headers = {"Authorization": self.settings.postiz_api_key}
         last_error: Exception | None = None
 
-        for attempt in range(self.settings.http_max_retries + 1):
+        for attempt in range(self.settings.max_external_retries + 1):
             try:
-                with httpx.Client(timeout=self.settings.http_timeout_seconds) as client:
+                with httpx.Client(timeout=self.settings.request_timeout_seconds) as client:
                     response = client.request(method, url, headers=headers, **kwargs)
                 if response.status_code < 400:
                     data = response.json()
                     return data if isinstance(data, dict) else {"data": data}
                 if response.status_code not in {429, 500, 502, 503, 504}:
                     raise ExternalClientError(
-                        f"Postiz request failed with status {response.status_code}."
+                        "Postiz request failed with status "
+                        f"{response.status_code}: {self._safe_response_excerpt(response)}"
                     )
                 last_error = ExternalClientError(
-                    f"Postiz transient failure with status {response.status_code}."
+                    "Postiz transient failure with status "
+                    f"{response.status_code}: {self._safe_response_excerpt(response)}"
                 )
             except httpx.HTTPError as exc:
                 last_error = exc
-            if attempt < self.settings.http_max_retries:
+            if attempt < self.settings.max_external_retries:
                 sleep(0.2 * (attempt + 1))
 
         raise ExternalClientError("Postiz request failed after bounded retries.") from last_error
+
+    def _safe_response_excerpt(self, response: httpx.Response) -> str:
+        text = response.text.strip() or "<empty response body>"
+        for secret in (self.settings.postiz_api_key,):
+            if secret:
+                text = text.replace(secret, "****")
+        return text[:500]
 
     def _schedule_payload(
         self,

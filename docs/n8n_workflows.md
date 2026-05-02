@@ -1,8 +1,12 @@
 # n8n Workflows
 
+All non-health API calls should include `X-API-Key: $GROWTH_AGENT_API_KEY`. n8n should store that value as a credential or environment variable, not inside workflow JSON.
+
 ## Idea Intake
 
 Trigger from a form, Slack command, CRM note, or manual entry. Normalize the input and call `POST /ideas/ingest` with `title`, `description`, `source`, `audience`, and optional metadata.
+
+Do not trigger keyword-based sales replies, mentions, DMs, follows, likes, or reposts.
 
 ## Draft and Evaluation
 
@@ -12,15 +16,47 @@ Branch on the evaluation response:
 
 - `can_auto_schedule=true`: call `POST /drafts/{id}/schedule`.
 - `requires_approval=true`: create a human approval task.
-- duplicate/high-risk/rejected: do not schedule automatically.
+- duplicate, near-duplicate, high-risk, or rejected: do not schedule automatically.
 
 ## Human Approval
 
 Use n8n's approval step or a Slack/Linear task. On approval, call `POST /drafts/{id}/approve`, then call `POST /drafts/{id}/schedule`. On rejection, call `POST /drafts/{id}/reject`.
 
+URL-bearing drafts need extra care:
+
+- If `OWNED_DOMAINS` is empty, require approval.
+- Owned-domain URLs can be auto-scheduled only when the evaluator returns low risk.
+- External URLs, short URLs, pricing/legal language, and strong claims require approval.
+
+## Dry-Run Smoke Test
+
+Keep `SCHEDULING_DRY_RUN=true` for the first workflow smoke test. Scheduling will create local post records with `dry_run=true` and will not call Postiz.
+
+Recommended smoke-test path:
+
+1. `POST /ideas/ingest`
+2. `POST /drafts/generate`
+3. `POST /drafts/{id}/evaluate`
+4. `POST /drafts/{id}/approve` when needed
+5. `POST /drafts/{id}/schedule`
+6. `GET /posts`
+
+## Postiz Test Scheduling
+
+After dry-run succeeds, verify the test X account connection through Postiz:
+
+- `POSTIZ_BASE_URL`
+- `POSTIZ_API_KEY`
+- `POSTIZ_X_INTEGRATION_ID`
+- `TEST_X_ACCOUNT_HANDLE`
+
+Then set `SCHEDULING_DRY_RUN=false` and rerun the same workflow against the test X account. The schedule response should have `dry_run=false` and a `postiz_post_id`.
+
 ## X ID Reconciliation
 
-Run after scheduled posts are expected to be live. Prefer manual mappings when Postiz or an operator provides the X post ID. Otherwise call `POST /posts/reconcile-x-ids` with a `lookback_days` window to match owned X posts by normalized text.
+Run after scheduled posts are expected to be live. Prefer manual mappings when Postiz or an operator provides the X post ID.
+
+Otherwise call `POST /posts/reconcile-x-ids` with a `lookback_days` window to match owned X posts by normalized text. This requires `X_BEARER_TOKEN` and `X_USER_ID`. If those are missing, reconciliation returns a safe empty result.
 
 ## Metrics Collection
 
@@ -29,6 +65,8 @@ Run on a timer, for example every 6 or 24 hours:
 1. Call `POST /posts/reconcile-x-ids`.
 2. Call `POST /metrics/collect`.
 3. Call `GET /metrics/summary` for dashboards or notifications.
+
+Metrics collection skips safely when X credentials are missing. Private or non-public metrics are not collected for posts older than 30 days.
 
 ## Feedback and Weekly Report
 

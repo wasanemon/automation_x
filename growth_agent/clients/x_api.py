@@ -82,9 +82,9 @@ class XApiClient:
         headers = {"Authorization": f"Bearer {self.settings.x_bearer_token}"}
         last_error: Exception | None = None
 
-        for attempt in range(self.settings.http_max_retries + 1):
+        for attempt in range(self.settings.max_external_retries + 1):
             try:
-                with httpx.Client(timeout=self.settings.http_timeout_seconds) as client:
+                with httpx.Client(timeout=self.settings.request_timeout_seconds) as client:
                     response = client.request(method, url, headers=headers, **kwargs)
                 if response.status_code < 400:
                     data = response.json()
@@ -98,7 +98,7 @@ class XApiClient:
                 )
             except httpx.HTTPError as exc:
                 last_error = exc
-            if attempt < self.settings.http_max_retries:
+            if attempt < self.settings.max_external_retries:
                 sleep(0.2 * (attempt + 1))
 
         raise ExternalClientError("X API request failed after bounded retries.") from last_error

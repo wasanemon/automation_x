@@ -79,6 +79,7 @@ class PostResponse(BaseModel):
     scheduled_for: datetime
     published_at: datetime | None
     has_url: bool
+    dry_run: bool
     created_at: datetime
 
 
