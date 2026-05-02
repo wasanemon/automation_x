@@ -67,6 +67,12 @@ class Post(Base, TimestampMixin):
     postiz_post_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     postiz_integration_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     x_post_id: Mapped[str | None] = mapped_column(String(160), nullable=True, unique=True)
+    x_post_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    x_reconciled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     has_url: Mapped[bool] = mapped_column(Boolean, default=False)

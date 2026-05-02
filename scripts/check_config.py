@@ -16,6 +16,8 @@ DEFAULTS = {
     "OWNED_DOMAINS": "",
     "SAFE_PUBLIC_READS": "false",
     "AUTO_APPLY_TENTATIVE_RULES": "false",
+    "X_RECONCILE_LOOKBACK_HOURS": "48",
+    "X_RECONCILE_TEXT_SIMILARITY_THRESHOLD": "0.82",
 }
 
 DRY_RUN_REQUIRED = ("DATABASE_URL", "GROWTH_AGENT_API_KEY", "SCHEDULING_DRY_RUN")
@@ -42,6 +44,8 @@ DISPLAY_KEYS = (
     "X_API_BASE_URL",
     "X_BEARER_TOKEN",
     "X_USER_ID",
+    "X_RECONCILE_LOOKBACK_HOURS",
+    "X_RECONCILE_TEXT_SIMILARITY_THRESHOLD",
     "REQUEST_TIMEOUT_SECONDS",
     "MAX_EXTERNAL_RETRIES",
 )
@@ -52,6 +56,9 @@ VALUE_OK_TO_PRINT = {
     "SCHEDULING_DRY_RUN",
     "SAFE_PUBLIC_READS",
     "AUTO_APPLY_TENTATIVE_RULES",
+    "X_USER_ID",
+    "X_RECONCILE_LOOKBACK_HOURS",
+    "X_RECONCILE_TEXT_SIMILARITY_THRESHOLD",
     "REQUEST_TIMEOUT_SECONDS",
     "MAX_EXTERNAL_RETRIES",
 }
@@ -86,7 +93,7 @@ def main() -> int:
     print("\nReadiness:")
     print(f"- dry-run flow: {ready_label(not dry_run_missing and dry_run_enabled)}")
     print(f"- Postiz test scheduling config: {ready_label(not postiz_missing)}")
-    print(f"- X metrics collection config: {ready_label(not x_missing)}")
+    print(f"- X metrics ready: {ready_label(not x_missing)}")
 
     print("\nSettings:")
     for key in DISPLAY_KEYS:
@@ -204,9 +211,7 @@ def display_value(key: str, value: str | None) -> str:
         return "unset"
     assert value is not None
     if key in SECRET_KEYS:
-        suffix = value[-4:] if len(value) >= 4 else "set"
-        prefix = "ga_" if key == "GROWTH_AGENT_API_KEY" and value.startswith("ga_") else ""
-        return f"set: {prefix}****{suffix}"
+        return "set: ****"
     if key in VALUE_OK_TO_PRINT:
         return value
     return "set"

@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from growth_agent.clients.postiz import PostizClient
+from growth_agent.clients.postiz import ExternalClientError, PostizClient
 from growth_agent.clients.x_api import OwnedPost, XMetrics
 from growth_agent.config import Settings, get_settings
 from growth_agent.deps import get_postiz_client
@@ -306,6 +306,8 @@ def test_reject_endpoint_blocks_scheduling(client):
 
 
 def test_reconcile_metrics_feedback_and_weekly_report(client, mock_x, monkeypatch):
+    monkeypatch.setenv("SCHEDULING_DRY_RUN", "false")
+    get_settings.cache_clear()
     idea = client.post(
         "/ideas/ingest",
         json={
@@ -330,12 +332,18 @@ def test_reconcile_metrics_feedback_and_weekly_report(client, mock_x, monkeypatc
     get_settings.cache_clear()
     collect = client.post("/metrics/collect", json={})
     assert collect.status_code == 200
-    assert collect.json() == {"collected": 1, "skipped": 0}
+    assert collect.json()["collected"] == 1
+    assert collect.json()["skipped"] == 0
+    assert collect.json()["errors"] == 0
 
     summary = client.get("/metrics/summary").json()
     assert summary["posts"] == 1
+    assert summary["total_posts_with_metrics"] == 1
     assert summary["impressions"] == 200
+    assert summary["total_impressions"] == 200
     assert summary["engagement_total"] == 32
+    assert summary["average_engagement_rate"] == 0.16
+    assert summary["top_posts"][0]["post_id"] == post["id"]
 
     feedback = client.post("/feedback/run")
     assert feedback.status_code == 200
@@ -351,6 +359,7 @@ def test_reconcile_metrics_feedback_and_weekly_report(client, mock_x, monkeypatc
 
 
 def test_automatic_reconcile_uses_owned_x_lookup(client, mock_x, monkeypatch):
+    monkeypatch.setenv("SCHEDULING_DRY_RUN", "false")
     monkeypatch.setenv("X_BEARER_TOKEN", "test-token")
     monkeypatch.setenv("X_USER_ID", "12345")
     get_settings.cache_clear()
@@ -362,7 +371,7 @@ def test_automatic_reconcile_uses_owned_x_lookup(client, mock_x, monkeypatch):
     post = client.post(f"/drafts/{draft['id']}/schedule", json={}).json()
     mock_x.owned_posts = [
         OwnedPost(
-            x_post_id="owned-1",
+            x_post_id="9876543210",
             text=post["content"],
             created_at=datetime.now(UTC),
             metrics={},
@@ -375,10 +384,191 @@ def test_automatic_reconcile_uses_owned_x_lookup(client, mock_x, monkeypatch):
     assert mock_x.list_calls == 1
 
     posts = client.get("/posts").json()
-    assert posts[0]["x_post_id"] == "owned-1"
+    assert posts[0]["x_post_id"] == "9876543210"
+    assert posts[0]["x_post_created_at"] is not None
+    assert posts[0]["x_reconciled_at"] is not None
 
 
-def test_metrics_collect_skips_when_x_credentials_missing(client):
+def test_automatic_reconcile_skips_when_similarity_is_low(client, mock_x, monkeypatch):
+    post = _create_live_post(
+        client,
+        monkeypatch,
+        title="Similarity skip",
+        description="Local content should not match a remote launch note.",
+    )
+    monkeypatch.setenv("X_BEARER_TOKEN", "test-token")
+    monkeypatch.setenv("X_USER_ID", "12345")
+    get_settings.cache_clear()
+    mock_x.owned_posts = [
+        OwnedPost(
+            x_post_id="1111111111",
+            text="A totally unrelated update about a different topic.",
+            created_at=datetime.now(UTC),
+            metrics={},
+        )
+    ]
+
+    response = client.post("/posts/reconcile-x-ids", json={})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["matched"] == 0
+    assert body["skipped"] == 1
+    assert body["results"][0]["post_id"] == post["id"]
+    assert client.get("/posts").json()[0]["x_post_id"] is None
+
+
+def test_automatic_reconcile_handles_japanese_text_and_tco_url(client, mock_x, monkeypatch):
+    monkeypatch.setenv("OWNED_DOMAINS", "example.com")
+    post = _create_live_post(
+        client,
+        monkeypatch,
+        title="日本語URL照合",
+        description="日本語の本文と https://example.com/post を含む投稿です。",
+    )
+    monkeypatch.setenv("X_BEARER_TOKEN", "test-token")
+    monkeypatch.setenv("X_USER_ID", "12345")
+    get_settings.cache_clear()
+    mock_x.owned_posts = [
+        OwnedPost(
+            x_post_id="1919191919",
+            text=post["content"].replace("https://example.com/post", "https://t.co/abc123"),
+            created_at=datetime.now(UTC),
+            metrics={},
+        )
+    ]
+
+    response = client.post("/posts/reconcile-x-ids", json={})
+
+    assert response.status_code == 200
+    assert response.json()["matched"] == 1
+    assert client.get("/posts").json()[0]["x_post_id"] == "1919191919"
+
+
+def test_automatic_reconcile_selects_best_candidate(client, mock_x, monkeypatch):
+    post = _create_live_post(
+        client,
+        monkeypatch,
+        title="Candidate choice",
+        description="The same text should prefer the closest X timestamp.",
+    )
+    monkeypatch.setenv("X_BEARER_TOKEN", "test-token")
+    monkeypatch.setenv("X_USER_ID", "12345")
+    get_settings.cache_clear()
+    mock_x.owned_posts = [
+        OwnedPost(
+            x_post_id="2222222222",
+            text=post["content"],
+            created_at=datetime.now(UTC) - timedelta(hours=24),
+            metrics={},
+        ),
+        OwnedPost(
+            x_post_id="3333333333",
+            text=post["content"],
+            created_at=datetime.now(UTC) + timedelta(minutes=30),
+            metrics={},
+        ),
+    ]
+
+    response = client.post("/posts/reconcile-x-ids", json={})
+
+    assert response.status_code == 200
+    assert response.json()["matched"] == 1
+    assert client.get("/posts").json()[0]["x_post_id"] == "3333333333"
+
+
+def test_automatic_reconcile_leaves_ambiguous_unmatched(client, mock_x, monkeypatch):
+    post = _create_live_post(
+        client,
+        monkeypatch,
+        title="Ambiguous candidate",
+        description="Two identical remote candidates should be left for a human.",
+    )
+    monkeypatch.setenv("X_BEARER_TOKEN", "test-token")
+    monkeypatch.setenv("X_USER_ID", "12345")
+    get_settings.cache_clear()
+    created_at = datetime.now(UTC)
+    mock_x.owned_posts = [
+        OwnedPost(
+            x_post_id="4444444444",
+            text=post["content"],
+            created_at=created_at,
+            metrics={},
+        ),
+        OwnedPost(
+            x_post_id="5555555555",
+            text=post["content"],
+            created_at=created_at,
+            metrics={},
+        ),
+    ]
+
+    response = client.post("/posts/reconcile-x-ids", json={})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["matched"] == 0
+    assert body["ambiguous"] == 1
+    assert body["results"][0]["status"] == "ambiguous"
+    assert client.get("/posts").json()[0]["x_post_id"] is None
+
+
+def test_manual_mapping_validates_and_requires_force_for_overwrite(client):
+    idea = client.post(
+        "/ideas/ingest",
+        json={"title": "Manual mapping", "description": "Manual X ID mapping path."},
+    ).json()
+    draft = client.post("/drafts/generate", json={"idea_id": idea["id"], "count": 1}).json()[0]
+    post = client.post(f"/drafts/{draft['id']}/schedule", json={}).json()
+
+    invalid = client.post(
+        "/posts/reconcile-x-ids",
+        json={"mappings": [{"post_id": post["id"], "x_post_id": "not-a-number"}]},
+    )
+    assert invalid.status_code == 422
+
+    first = client.post(
+        "/posts/reconcile-x-ids",
+        json={"mappings": [{"post_id": post["id"], "x_post_id": "1212121212"}]},
+    )
+    assert first.status_code == 200
+    assert first.json()["matched"] == 1
+    assert first.json()["posts"][0]["x_reconciled_at"] is not None
+
+    blocked = client.post(
+        "/posts/reconcile-x-ids",
+        json={"mappings": [{"post_id": post["id"], "x_post_id": "3434343434"}]},
+    )
+    assert blocked.status_code == 200
+    assert blocked.json()["skipped"] == 1
+    assert client.get("/posts").json()[0]["x_post_id"] == "1212121212"
+
+    forced = client.post(
+        "/posts/reconcile-x-ids",
+        json={
+            "force": True,
+            "mappings": [{"post_id": post["id"], "x_post_id": "3434343434"}],
+        },
+    )
+    assert forced.status_code == 200
+    assert forced.json()["matched"] == 1
+    assert client.get("/posts").json()[0]["x_post_id"] == "3434343434"
+
+
+def test_manual_mapping_reports_missing_post(client):
+    response = client.post(
+        "/posts/reconcile-x-ids",
+        json={"mappings": [{"post_id": 9999, "x_post_id": "9999999999"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["errors"][0]["reason"] == "Post 9999 was not found."
+
+
+def test_metrics_collect_skips_when_x_credentials_missing(client, monkeypatch):
+    monkeypatch.setenv("SCHEDULING_DRY_RUN", "false")
+    monkeypatch.setenv("X_BEARER_TOKEN", "")
+    get_settings.cache_clear()
     idea = client.post(
         "/ideas/ingest",
         json={"title": "Metrics skip", "description": "A post that can be reconciled later."},
@@ -387,38 +577,106 @@ def test_metrics_collect_skips_when_x_credentials_missing(client):
     post = client.post(f"/drafts/{draft['id']}/schedule", json={}).json()
     client.post(
         "/posts/reconcile-x-ids",
-        json={"mappings": [{"post_id": post["id"], "x_post_id": "missing-token"}]},
+        json={"mappings": [{"post_id": post["id"], "x_post_id": "6666666666"}]},
     )
 
     collect = client.post("/metrics/collect", json={})
     assert collect.status_code == 200
-    assert collect.json() == {"collected": 0, "skipped": 1}
+    assert collect.json()["collected"] == 0
+    assert collect.json()["skipped"] == 1
 
 
-def test_metrics_collect_skips_posts_older_than_private_metrics_window(
-    client, mock_x, monkeypatch
-):
+def test_metrics_collect_skips_post_without_x_post_id(client, monkeypatch):
+    post = _create_live_post(
+        client,
+        monkeypatch,
+        title="Missing X ID",
+        description="Metrics should skip until the X post ID is known.",
+    )
+    monkeypatch.setenv("X_BEARER_TOKEN", "test-token")
+    get_settings.cache_clear()
+
+    collect = client.post("/metrics/collect", json={"post_id": post["id"]})
+
+    assert collect.status_code == 200
+    assert collect.json()["collected"] == 0
+    assert collect.json()["skipped"] == 1
+    assert collect.json()["results"][0]["reason"] == "Post has no x_post_id."
+
+
+def test_metrics_collect_skips_dry_run_posts(client, mock_x, monkeypatch):
     monkeypatch.setenv("X_BEARER_TOKEN", "test-token")
     get_settings.cache_clear()
     idea = client.post(
         "/ideas/ingest",
-        json={"title": "Old metrics", "description": "A post outside the private window."},
+        json={"title": "Dry metrics", "description": "A dry-run post should not collect."},
     ).json()
     draft = client.post("/drafts/generate", json={"idea_id": idea["id"], "count": 1}).json()[0]
-    scheduled_for = (datetime.now(UTC) - timedelta(days=31)).isoformat()
-    post = client.post(
-        f"/drafts/{draft['id']}/schedule",
-        json={"scheduled_for": scheduled_for},
-    ).json()
+    post = client.post(f"/drafts/{draft['id']}/schedule", json={}).json()
     client.post(
         "/posts/reconcile-x-ids",
-        json={"mappings": [{"post_id": post["id"], "x_post_id": "old-post"}]},
+        json={"mappings": [{"post_id": post["id"], "x_post_id": "7777777777"}]},
     )
 
     collect = client.post("/metrics/collect", json={})
     assert collect.status_code == 200
-    assert collect.json() == {"collected": 0, "skipped": 1}
+    assert collect.json()["collected"] == 0
+    assert collect.json()["skipped"] == 1
     assert mock_x.metrics_calls == []
+
+
+def test_metrics_collect_handles_api_error_per_post(client, mock_x, monkeypatch):
+    post = _create_live_post(
+        client,
+        monkeypatch,
+        title="Metrics API error",
+        description="One post error should not fail the whole collection request.",
+    )
+    client.post(
+        "/posts/reconcile-x-ids",
+        json={"mappings": [{"post_id": post["id"], "x_post_id": "8888888888"}]},
+    )
+    monkeypatch.setenv("X_BEARER_TOKEN", "test-token")
+    get_settings.cache_clear()
+    mock_x.metric_errors["8888888888"] = ExternalClientError("X API unavailable in test.")
+
+    collect = client.post("/metrics/collect", json={})
+
+    assert collect.status_code == 200
+    assert collect.json()["collected"] == 0
+    assert collect.json()["errors"] == 1
+    assert collect.json()["results"][0]["status"] == "error"
+
+
+def test_metrics_collect_saves_multiple_snapshots_and_summary_uses_latest(
+    client, mock_x, monkeypatch
+):
+    post = _create_live_post(
+        client,
+        monkeypatch,
+        title="Latest summary",
+        description="Summary should use the latest snapshot for each post.",
+    )
+    client.post(
+        "/posts/reconcile-x-ids",
+        json={"mappings": [{"post_id": post["id"], "x_post_id": "9999999999"}]},
+    )
+    monkeypatch.setenv("X_BEARER_TOKEN", "test-token")
+    get_settings.cache_clear()
+
+    mock_x.metrics["9999999999"] = XMetrics(impressions=100, likes=5)
+    first = client.post("/metrics/collect", json={"post_id": post["id"]})
+    mock_x.metrics["9999999999"] = XMetrics(impressions=250, likes=10, bookmarks=3)
+    second = client.post("/metrics/collect", json={"post_id": post["id"]})
+
+    assert first.json()["collected"] == 1
+    assert second.json()["collected"] == 1
+    summary = client.get("/metrics/summary").json()
+    assert summary["latest_snapshot_count"] == 1
+    assert summary["total_impressions"] == 250
+    assert summary["total_likes"] == 10
+    assert summary["total_bookmarks"] == 3
+    assert summary["top_posts"][0]["impressions"] == 250
 
 
 def test_postiz_client_uses_public_base_url_without_adding_prefix(monkeypatch):
@@ -464,3 +722,20 @@ def test_postiz_client_uses_public_base_url_without_adding_prefix(monkeypatch):
     assert result.postiz_post_id == "postiz-id"
     assert requested["url"] == "https://api.postiz.com/public/v1/posts"
     assert requested["timeout"] == 7
+
+
+def _create_live_post(client, monkeypatch, *, title: str, description: str):
+    monkeypatch.setenv("SCHEDULING_DRY_RUN", "false")
+    get_settings.cache_clear()
+    idea = client.post(
+        "/ideas/ingest",
+        json={"title": title, "description": description, "audience": "builders"},
+    ).json()
+    draft = client.post("/drafts/generate", json={"idea_id": idea["id"], "count": 1}).json()[0]
+    scheduled_for = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    response = client.post(
+        f"/drafts/{draft['id']}/schedule",
+        json={"scheduled_for": scheduled_for},
+    )
+    assert response.status_code == 201
+    return response.json()

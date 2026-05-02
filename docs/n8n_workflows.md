@@ -56,7 +56,7 @@ Then set `SCHEDULING_DRY_RUN=false` and rerun the same workflow against the test
 
 Run after scheduled posts are expected to be live. Prefer manual mappings when Postiz or an operator provides the X post ID.
 
-Otherwise call `POST /posts/reconcile-x-ids` with a `lookback_days` window to match owned X posts by normalized text. This requires `X_BEARER_TOKEN` and `X_USER_ID`. If those are missing, reconciliation returns a safe empty result.
+Otherwise call `POST /posts/reconcile-x-ids` to match owned X posts by normalized text and scheduled/created time proximity. This requires `X_BEARER_TOKEN` and `X_USER_ID`. If those are missing, reconciliation skips safely and Postiz scheduling still works.
 
 ## Metrics Collection
 
@@ -66,7 +66,7 @@ Run on a timer, for example every 6 or 24 hours:
 2. Call `POST /metrics/collect`.
 3. Call `GET /metrics/summary` for dashboards or notifications.
 
-Metrics collection skips safely when X credentials are missing. Private or non-public metrics are not collected for posts older than 30 days.
+Metrics collection skips safely when X credentials are missing. The MVP collects public metrics only: impressions, likes, replies, reposts, quotes, and bookmarks. URL clicks, profile clicks, organic metrics, promoted metrics, and non-public/private metrics are future user-context auth work.
 
 ## Feedback and Weekly Report
 

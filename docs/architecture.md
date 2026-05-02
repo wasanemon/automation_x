@@ -32,7 +32,7 @@ flowchart LR
 - Growth Agent stores ideas, drafts, posts, metrics, experiments, playbook rules, and feedback runs.
 - Postiz handles publishing and scheduling to the configured test X account.
 - n8n handles orchestration, human approvals, timers, and notifications.
-- X API is read-only in this MVP and used only for owned post reconciliation and metrics collection.
+- X API is read-only in this MVP and used only for owned post reconciliation and public metrics collection.
 - `GET /health` is public. Other endpoints require `GROWTH_AGENT_API_KEY` unless `TESTING=true`; non-health GET endpoints can be made public only with `SAFE_PUBLIC_READS=true`.
 
 ## Configuration Flow
@@ -56,6 +56,8 @@ Postiz variables are treated as user-provided:
 4. Safe low-risk drafts can be scheduled; medium/high-risk drafts require human approval.
 5. In dry-run, scheduling creates a local post record with `dry_run=true`.
 6. In live test mode, scheduling creates a local in-progress record before calling Postiz, then stores the Postiz post ID.
-7. Scheduled posts can be reconciled with owned X IDs manually or by owned lookup when X credentials exist.
-8. Metrics snapshots feed the feedback engine. Missing X credentials cause metrics collection to skip safely.
+7. Scheduled posts can be reconciled with owned X IDs manually, or automatically by comparing normalized text similarity plus scheduled/created time proximity against recent owned X posts.
+8. Metrics snapshots store public metrics from X only: impressions, likes, replies, reposts, quotes, and bookmarks. Missing X credentials cause metrics collection to skip safely and do not affect startup, dry-run, or Postiz scheduling.
 9. Feedback updates playbook rule weights and informs later draft generation.
+
+Private metrics, URL clicks, profile clicks, organic metrics, promoted metrics, and non-public metrics are future extensions that require an appropriate user-context authentication boundary.

@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     x_api_base_url: str = "https://api.x.com"
     x_bearer_token: str = ""
     x_user_id: str = ""
+    x_reconcile_lookback_hours: int = Field(default=48, ge=1, le=24 * 30)
+    x_reconcile_text_similarity_threshold: float = Field(default=0.82, ge=0.5, le=1)
 
     request_timeout_seconds: float = Field(
         default=10,

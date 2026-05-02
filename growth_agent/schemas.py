@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class IdeaIngestRequest(BaseModel):
@@ -76,6 +76,8 @@ class PostResponse(BaseModel):
     postiz_post_id: str | None
     postiz_integration_id: str | None
     x_post_id: str | None
+    x_post_created_at: datetime | None
+    x_reconciled_at: datetime | None
     scheduled_for: datetime
     published_at: datetime | None
     has_url: bool
@@ -87,27 +89,80 @@ class ReconcileMapping(BaseModel):
     post_id: int
     x_post_id: str = Field(min_length=1, max_length=160)
 
+    @field_validator("x_post_id")
+    @classmethod
+    def validate_x_post_id(cls, value: str) -> str:
+        if not value.isdecimal():
+            raise ValueError("x_post_id must be a numeric string.")
+        return value
+
 
 class ReconcileRequest(BaseModel):
     mappings: list[ReconcileMapping] = Field(default_factory=list)
-    lookback_days: int = Field(default=7, ge=1, le=30)
+    lookback_hours: int | None = Field(default=None, ge=1, le=24 * 30)
+    lookback_days: int | None = Field(default=None, ge=1, le=30)
+    force: bool = False
+
+
+class ReconcileResultItem(BaseModel):
+    post_id: int | None = None
+    status: Literal["matched", "skipped", "ambiguous", "error"]
+    x_post_id: str | None = None
+    score: float | None = None
+    reason: str | None = None
 
 
 class ReconcileResponse(BaseModel):
     reconciled: int
+    matched: int
+    skipped: int
+    ambiguous: int
+    errors: list[ReconcileResultItem] = Field(default_factory=list)
+    results: list[ReconcileResultItem] = Field(default_factory=list)
     posts: list[PostResponse]
 
 
 class MetricsCollectRequest(BaseModel):
+    post_id: int | None = None
     post_ids: list[int] | None = None
+
+
+class MetricsCollectResultItem(BaseModel):
+    post_id: int
+    status: Literal["collected", "skipped", "error"]
+    x_post_id: str | None = None
+    reason: str | None = None
 
 
 class MetricsCollectResponse(BaseModel):
     collected: int
     skipped: int
+    errors: int = 0
+    results: list[MetricsCollectResultItem] = Field(default_factory=list)
+
+
+class MetricsTopPost(BaseModel):
+    post_id: int
+    x_post_id: str
+    text_preview: str
+    impressions: int
+    likes: int
+    replies: int
+    reposts: int
+    bookmarks: int
 
 
 class MetricsSummaryResponse(BaseModel):
+    total_posts_with_metrics: int
+    latest_snapshot_count: int
+    total_impressions: int
+    total_likes: int
+    total_reposts: int
+    total_replies: int
+    total_quotes: int
+    total_bookmarks: int
+    average_engagement_rate: float
+    top_posts: list[MetricsTopPost]
     posts: int
     impressions: int
     likes: int

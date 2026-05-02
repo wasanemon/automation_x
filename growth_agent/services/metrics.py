@@ -1,38 +1,84 @@
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from growth_agent.clients.postiz import ExternalClientError
 from growth_agent.clients.x_api import XApiClient
 from growth_agent.models import MetricSnapshot, Post
+from growth_agent.services.text import truncate_sentence
 
-PRIVATE_METRICS_MAX_AGE_DAYS = 30
+
+@dataclass(frozen=True)
+class MetricsCollectItem:
+    post_id: int
+    status: Literal["collected", "skipped", "error"]
+    x_post_id: str | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class MetricsCollectOutcome:
+    results: list[MetricsCollectItem]
+
+    @property
+    def collected(self) -> int:
+        return sum(1 for item in self.results if item.status == "collected")
+
+    @property
+    def skipped(self) -> int:
+        return sum(1 for item in self.results if item.status == "skipped")
+
+    @property
+    def errors(self) -> int:
+        return sum(1 for item in self.results if item.status == "error")
 
 
 def collect_metrics(
     db: Session,
     x_client: XApiClient,
     post_ids: list[int] | None = None,
-) -> tuple[int, int]:
-    query = select(Post)
-    if post_ids is not None:
-        query = query.where(Post.id.in_(post_ids))
-    else:
-        query = query.where(Post.x_post_id.is_not(None))
+) -> MetricsCollectOutcome:
+    posts = _metric_candidates(db, post_ids)
+    results: list[MetricsCollectItem] = []
 
-    posts = list(db.scalars(query))
-    collected = 0
-    skipped = 0
     now = datetime.now(UTC)
     for post in posts:
+        if post.dry_run:
+            results.append(
+                MetricsCollectItem(
+                    post_id=post.id,
+                    status="skipped",
+                    x_post_id=post.x_post_id,
+                    reason="Post is dry_run=true.",
+                )
+            )
+            continue
         if not post.x_post_id:
-            skipped += 1
+            results.append(
+                MetricsCollectItem(
+                    post_id=post.id,
+                    status="skipped",
+                    reason="Post has no x_post_id.",
+                )
+            )
             continue
-        post_time = _post_metric_time(post)
-        if post_time is not None and now - post_time > timedelta(days=PRIVATE_METRICS_MAX_AGE_DAYS):
-            skipped += 1
+
+        try:
+            metrics = x_client.get_post_metrics(post.x_post_id)
+        except ExternalClientError as exc:
+            results.append(
+                MetricsCollectItem(
+                    post_id=post.id,
+                    status="error",
+                    x_post_id=post.x_post_id,
+                    reason=str(exc),
+                )
+            )
             continue
-        metrics = x_client.get_post_metrics(post.x_post_id)
+
         snapshot = MetricSnapshot(
             post_id=post.id,
             collected_at=now,
@@ -48,27 +94,34 @@ def collect_metrics(
             post.published_at = now
         db.add(snapshot)
         db.add(post)
-        collected += 1
+        results.append(
+            MetricsCollectItem(
+                post_id=post.id,
+                status="collected",
+                x_post_id=post.x_post_id,
+            )
+        )
     db.commit()
-    return collected, skipped
+    return MetricsCollectOutcome(results=results)
 
 
 def count_metric_candidates(db: Session, post_ids: list[int] | None = None) -> int:
+    return len(
+        [
+            post
+            for post in _metric_candidates(db, post_ids)
+            if post.x_post_id and not post.dry_run
+        ]
+    )
+
+
+def _metric_candidates(db: Session, post_ids: list[int] | None = None) -> list[Post]:
     query = select(Post)
     if post_ids is not None:
         query = query.where(Post.id.in_(post_ids))
     else:
         query = query.where(Post.x_post_id.is_not(None))
-    return len(list(db.scalars(query)))
-
-
-def _post_metric_time(post: Post) -> datetime | None:
-    value = post.published_at or post.scheduled_for
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
+    return list(db.scalars(query.order_by(Post.id.asc())))
 
 
 def latest_metric_snapshots(db: Session) -> list[MetricSnapshot]:
@@ -86,7 +139,7 @@ def latest_metric_snapshots(db: Session) -> list[MetricSnapshot]:
     )
 
 
-def metrics_summary(db: Session) -> dict[str, int | float]:
+def metrics_summary(db: Session) -> dict[str, int | float | list[dict[str, int | str]]]:
     snapshots = latest_metric_snapshots(db)
     totals = {
         "posts": len(snapshots),
@@ -105,8 +158,40 @@ def metrics_summary(db: Session) -> dict[str, int | float]:
         + totals["bookmarks"]
     )
     impressions = totals["impressions"]
+    engagement_rate = round(engagement_total / impressions, 4) if impressions else 0.0
+    top_posts = sorted(
+        snapshots,
+        key=lambda snapshot: (
+            snapshot.impressions,
+            snapshot.likes + snapshot.replies + snapshot.reposts + snapshot.bookmarks,
+            snapshot.post_id,
+        ),
+        reverse=True,
+    )[:5]
     return {
+        "total_posts_with_metrics": len(snapshots),
+        "latest_snapshot_count": len(snapshots),
+        "total_impressions": totals["impressions"],
+        "total_likes": totals["likes"],
+        "total_reposts": totals["reposts"],
+        "total_replies": totals["replies"],
+        "total_quotes": totals["quotes"],
+        "total_bookmarks": totals["bookmarks"],
+        "average_engagement_rate": engagement_rate,
+        "top_posts": [
+            {
+                "post_id": snapshot.post_id,
+                "x_post_id": snapshot.post.x_post_id or "",
+                "text_preview": truncate_sentence(snapshot.post.content, 90),
+                "impressions": snapshot.impressions,
+                "likes": snapshot.likes,
+                "replies": snapshot.replies,
+                "reposts": snapshot.reposts,
+                "bookmarks": snapshot.bookmarks,
+            }
+            for snapshot in top_posts
+        ],
         **totals,
         "engagement_total": engagement_total,
-        "engagement_rate": round(engagement_total / impressions, 4) if impressions else 0.0,
+        "engagement_rate": engagement_rate,
     }

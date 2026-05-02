@@ -20,11 +20,13 @@ from growth_agent.schemas import (
     IdeaResponse,
     MetricsCollectRequest,
     MetricsCollectResponse,
+    MetricsCollectResultItem,
     MetricsSummaryResponse,
     PlaybookRuleResponse,
     PostResponse,
     ReconcileRequest,
     ReconcileResponse,
+    ReconcileResultItem,
     RejectRequest,
     ScheduleDraftRequest,
     WeeklyReportResponse,
@@ -33,8 +35,9 @@ from growth_agent.services.drafts import create_drafts_for_idea
 from growth_agent.services.evaluator import DraftEvaluator
 from growth_agent.services.feedback import active_playbook_rules, run_feedback
 from growth_agent.services.metrics import collect_metrics, count_metric_candidates, metrics_summary
+from growth_agent.services.reconcile import apply_manual_mappings
+from growth_agent.services.reconcile import reconcile_x_ids as reconcile_posts
 from growth_agent.services.reports import weekly_report
-from growth_agent.services.text import similarity
 
 app = FastAPI(title="Growth Agent", version="0.1.0")
 
@@ -241,47 +244,43 @@ def reconcile_x_ids(
     db: Session = Depends(get_db),
     x_client: XApiClient = Depends(get_x_client),
 ) -> ReconcileResponse:
-    reconciled_posts: list[Post] = []
-    for mapping in payload.mappings:
-        post = db.get(Post, mapping.post_id)
-        if post is None:
-            raise HTTPException(status_code=404, detail=f"Post {mapping.post_id} not found.")
-        post.x_post_id = mapping.x_post_id
-        db.add(post)
-        reconciled_posts.append(post)
+    settings = get_settings()
+    if payload.mappings:
+        outcome = apply_manual_mappings(
+            db,
+            [(mapping.post_id, mapping.x_post_id) for mapping in payload.mappings],
+            force=payload.force,
+        )
+    else:
+        lookback_hours = payload.lookback_hours
+        if lookback_hours is None and payload.lookback_days is not None:
+            lookback_hours = payload.lookback_days * 24
+        outcome = reconcile_posts(
+            db,
+            x_client,
+            settings,
+            lookback_hours=lookback_hours,
+        )
 
-    if not payload.mappings:
-        settings = get_settings()
-        if not settings.x_bearer_token or not settings.x_user_id:
-            return ReconcileResponse(reconciled=0, posts=[])
-        end_time = datetime.now(UTC)
-        start_time = end_time - timedelta(days=payload.lookback_days)
-        try:
-            owned_posts = x_client.list_owned_posts(start_time=start_time, end_time=end_time)
-        except ExternalClientError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        local_posts = list(db.scalars(select(Post).where(Post.x_post_id.is_(None))))
-        for local_post in local_posts:
-            match = next(
-                (
-                    owned
-                    for owned in owned_posts
-                    if similarity(local_post.content, owned.text) >= 0.92
-                ),
-                None,
-            )
-            if match is not None:
-                local_post.x_post_id = match.x_post_id
-                if match.created_at is not None:
-                    local_post.published_at = match.created_at
-                    local_post.status = "published"
-                db.add(local_post)
-                reconciled_posts.append(local_post)
-
-    db.commit()
-    for post in reconciled_posts:
-        db.refresh(post)
-    return ReconcileResponse(reconciled=len(reconciled_posts), posts=reconciled_posts)
+    results = [
+        ReconcileResultItem(
+            post_id=item.post_id,
+            status=item.status,
+            x_post_id=item.x_post_id,
+            score=item.score,
+            reason=item.reason,
+        )
+        for item in outcome.results
+    ]
+    return ReconcileResponse(
+        reconciled=outcome.matched,
+        matched=outcome.matched,
+        skipped=outcome.skipped,
+        ambiguous=outcome.ambiguous,
+        errors=[item for item in results if item.status == "error"],
+        results=results,
+        posts=outcome.posts,
+    )
 
 
 @app.post(
@@ -294,16 +293,29 @@ def collect_post_metrics(
     db: Session = Depends(get_db),
     x_client: XApiClient = Depends(get_x_client),
 ) -> MetricsCollectResponse:
+    post_ids = _metric_post_ids(payload)
     if not get_settings().x_bearer_token:
         return MetricsCollectResponse(
             collected=0,
-            skipped=count_metric_candidates(db, payload.post_ids),
+            skipped=count_metric_candidates(db, post_ids),
+            errors=0,
+            results=[],
         )
-    try:
-        collected, skipped = collect_metrics(db, x_client, payload.post_ids)
-    except ExternalClientError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return MetricsCollectResponse(collected=collected, skipped=skipped)
+    outcome = collect_metrics(db, x_client, post_ids)
+    return MetricsCollectResponse(
+        collected=outcome.collected,
+        skipped=outcome.skipped,
+        errors=outcome.errors,
+        results=[
+            MetricsCollectResultItem(
+                post_id=item.post_id,
+                status=item.status,
+                x_post_id=item.x_post_id,
+                reason=item.reason,
+            )
+            for item in outcome.results
+        ],
+    )
 
 
 @app.get(
@@ -311,7 +323,7 @@ def collect_post_metrics(
     response_model=MetricsSummaryResponse,
     dependencies=[Depends(require_api_key)],
 )
-def get_metrics_summary(db: Session = Depends(get_db)) -> dict[str, int | float]:
+def get_metrics_summary(db: Session = Depends(get_db)) -> dict[str, object]:
     return metrics_summary(db)
 
 
@@ -353,3 +365,9 @@ def _get_draft_or_404(db: Session, draft_id: int) -> Draft:
     if draft is None:
         raise HTTPException(status_code=404, detail="Draft not found.")
     return draft
+
+
+def _metric_post_ids(payload: MetricsCollectRequest) -> list[int] | None:
+    if payload.post_id is not None:
+        return [payload.post_id]
+    return payload.post_ids

@@ -83,6 +83,51 @@ docker compose up --build
 
 その後、dry-runと同じ `idea -> draft -> evaluate -> approve -> schedule -> posts確認` を実行します。scheduleレスポンスで `dry_run=false` かつ `postiz_post_id` が入っていれば、Postiz経由の予約作成まで進んでいます。
 
+## X投稿ID紐づけとpublic metrics
+
+Postiz経由の投稿がX上で公開された後、Growth Agentのpost recordに実投稿IDを紐づけてからmetricsを取得します。`.env` には `X_BEARER_TOKEN` と `X_USER_ID` が設定済みである前提です。`X_BEARER_TOKEN` はログ、README、curl例、標準出力に表示しないでください。
+
+自動紐づけは、`X_USER_ID` の最近のowned postsをread-onlyで取得し、本文類似度と投稿時刻の近さで照合します。URLはX上で `t.co` 化されることがあるため、比較時はURLや記号差分に強い正規化を行います。
+
+```bash
+curl -X POST http://localhost:8000/posts/reconcile-x-ids \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+X投稿IDが分かっている場合はmanual mappingを使えます。既存の `x_post_id` を上書きする場合だけ `force=true` を指定します。
+
+```bash
+curl -X POST http://localhost:8000/posts/reconcile-x-ids \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"mappings":[{"post_id":1,"x_post_id":"1234567890123456789"}]}'
+```
+
+public metricsを保存します。`post_id` を指定すると、そのpostだけを取得します。
+
+```bash
+curl -X POST http://localhost:8000/metrics/collect \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+
+curl -X POST http://localhost:8000/metrics/collect \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"post_id":1}'
+```
+
+保存済みsnapshotのsummaryを確認します。
+
+```bash
+curl http://localhost:8000/metrics/summary \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY"
+```
+
+今回取得するのはBearer Tokenで読めるpublic metricsのみです。`impression_count`, `like_count`, `retweet_count`, `reply_count`, `quote_count`, `bookmark_count` を保存します。URL clicks、profile clicks、engagements、follows、`organic_metrics`、`promoted_metrics`、`non_public_metrics` は今回は対象外です。これらは将来、適切なuser context認証を追加してから扱います。
+
 ## Environment Variables
 
 | Variable | Purpose | Required when |
@@ -102,6 +147,8 @@ docker compose up --build
 | `X_API_BASE_URL` | X API base URL. | metrics |
 | `X_BEARER_TOKEN` | Read-only X token for owned lookup and metrics. | metrics |
 | `X_USER_ID` | Owned X user ID. | metrics lookup |
+| `X_RECONCILE_LOOKBACK_HOURS` | Default owned-post lookup window for X ID reconciliation. | optional |
+| `X_RECONCILE_TEXT_SIMILARITY_THRESHOLD` | Minimum normalized text similarity for automatic X ID reconciliation. | optional |
 | `REQUEST_TIMEOUT_SECONDS` | External HTTP timeout. | external calls |
 | `MAX_EXTERNAL_RETRIES` | Bounded retry count. | external calls |
 | `DUPLICATE_SIMILARITY_THRESHOLD` | Near-duplicate threshold before scheduling. | scheduling |
@@ -150,13 +197,22 @@ curl -X POST http://localhost:8000/drafts/1/reject \
   -d '{"reviewer":"marketing","reason":"Too speculative."}'
 ```
 
+Reconcile X IDs automatically:
+
+```bash
+curl -X POST http://localhost:8000/posts/reconcile-x-ids \
+  -H "X-API-Key: $GROWTH_AGENT_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
 Reconcile X IDs manually:
 
 ```bash
 curl -X POST http://localhost:8000/posts/reconcile-x-ids \
   -H "X-API-Key: $GROWTH_AGENT_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"mappings":[{"post_id":1,"x_post_id":"1234567890"}]}'
+  -d '{"mappings":[{"post_id":1,"x_post_id":"1234567890123456789"}]}'
 ```
 
 Collect metrics and summarize:
