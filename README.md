@@ -8,6 +8,149 @@ idea collection -> draft generation -> evaluation and safety gate -> scheduling 
 
 Postiz is the publishing/scheduling layer. n8n is the workflow and human-approval layer. This repo is the Growth Agent service.
 
+## Current Deployment Snapshot
+
+Current public Growth Agent deployment:
+
+```text
+https://automation-x-kwzx.onrender.com
+```
+
+Verified status on 2026-05-06:
+
+- Public `GET /health` returns `{"status":"ok","database":"ok"}`.
+- Authenticated `GET /automation/status` works from outside the local machine.
+- n8n Cloud can reach the public HTTPS Growth Agent endpoint.
+- A dry-run automation cycle has been executed successfully through the public deployment.
+- Current safe operating mode is `AUTO_POSTING_ENABLED=false`, `SCHEDULING_DRY_RUN=true`, and `AUTOMATION_KILL_SWITCH=false`.
+- Last confirmed dry-run behavior: local dry-run schedule records can be created; `live_scheduled_count=0`; Postiz live scheduling is not called.
+
+Before production live scheduling, rotate any database/API credentials that were copied into chat or other non-secret systems, then update Render and n8n credentials.
+
+## System Architecture
+
+Growth Agent is a small FastAPI control plane for a safe posting loop. It does not post to X directly. It decides what is eligible, stores local state, calls Postiz for scheduling only when all gates are open, and reads X public data only after posts exist.
+
+```text
+n8n Cloud
+  -> HTTPS Growth Agent API on Render
+      -> PostgreSQL on Render
+      -> Postiz Public API for scheduling to the test X account
+      -> X API read-only owned lookup and public metrics
+```
+
+Core responsibilities:
+
+- **n8n Cloud**: timers, manual dry-run/live workflow execution, future approval/notification routing.
+- **Growth Agent API**: idea ingestion, draft generation, evaluation, duplicate checks, scheduling decisions, run history, reconciliation, metrics collection, summaries.
+- **PostgreSQL**: durable storage for ideas, drafts, posts, metrics snapshots, feedback/playbook data, and automation run history.
+- **Postiz**: the only publishing/scheduling path to X.
+- **X API**: read-only owned post lookup and public metrics collection.
+
+Automation loop:
+
+```text
+idea
+-> draft
+-> evaluate
+-> safety/approval decision
+-> dry-run local schedule or Postiz live schedule
+-> X publishes via Postiz
+-> reconcile x_post_id from owned posts
+-> collect public metrics
+-> store summary/history
+-> next cycle
+```
+
+Important safety boundaries:
+
+- No automated replies.
+- No automated mentions.
+- No automated likes.
+- No automated follows.
+- No automated reposts.
+- No automated DMs.
+- No keyword-triggered outreach.
+- X API usage remains read-only.
+- Live scheduling is allowed only when `AUTO_POSTING_ENABLED=true`, `SCHEDULING_DRY_RUN=false`, `AUTOMATION_KILL_SWITCH=false`, evaluator risk is low, score is high enough, duplicate checks pass, approval is not required, and posting frequency limits pass.
+
+## Production Render + n8n Cloud Setup
+
+Render Web Service:
+
+- Repository: `wasanemon/automation_x`
+- Branch during this MVP: `codex/x-public-metrics-reconcile`
+- Dockerfile path: `./Dockerfile`
+- Docker build context directory: empty or `.`
+- The container runs `alembic upgrade head` before starting Uvicorn.
+- The app respects Render's `PORT` env var.
+
+Render environment variables:
+
+```text
+APP_ENV=production
+TESTING=false
+DATABASE_URL=postgresql+psycopg://...
+GROWTH_AGENT_API_KEY=<secret>
+SAFE_PUBLIC_READS=false
+
+SCHEDULING_DRY_RUN=true
+AUTO_POSTING_ENABLED=false
+AUTOMATION_KILL_SWITCH=false
+
+MAX_AUTO_SCHEDULE_PER_CYCLE=1
+MAX_AUTO_SCHEDULE_PER_DAY=3
+MIN_HOURS_BETWEEN_AUTO_POSTS=4
+DEFAULT_SCHEDULE_DELAY_MINUTES=30
+
+REQUEST_TIMEOUT_SECONDS=10
+MAX_EXTERNAL_RETRIES=2
+DUPLICATE_SIMILARITY_THRESHOLD=0.88
+AUTO_SCHEDULE_SCORE_THRESHOLD=80
+```
+
+Add these when running live Postiz/X tests:
+
+```text
+POSTIZ_BASE_URL=<secret/service URL>
+POSTIZ_API_KEY=<secret>
+POSTIZ_X_INTEGRATION_ID=<secret>
+TEST_X_ACCOUNT_HANDLE=<test account handle>
+
+X_API_BASE_URL=https://api.x.com
+X_BEARER_TOKEN=<secret>
+X_USER_ID=<owned test account user id>
+X_RECONCILE_LOOKBACK_HOURS=48
+X_RECONCILE_TEXT_SIMILARITY_THRESHOLD=0.82
+```
+
+n8n Cloud setup:
+
+- Variable `GROWTH_AGENT_BASE_URL=https://automation-x-kwzx.onrender.com`.
+- Header Auth credential named, for example, `Growth Agent Header Auth`.
+- Header Auth credential fields:
+  - `Name`: `X-API-Key`
+  - `Value`: the same `GROWTH_AGENT_API_KEY` configured on Render.
+- Import the three workflows from `n8n/`.
+- Select the Header Auth credential on every HTTP Request node after import.
+
+Recommended rollout:
+
+1. Keep Render in dry-run mode.
+2. Run `Growth Agent - Dry Run Smoke Test` manually from n8n Cloud.
+3. Confirm `dry_run_scheduled_count` can increment and `live_scheduled_count=0`.
+4. Confirm Postiz integration points to the test X account.
+5. Only then switch Render to live test mode:
+
+```text
+AUTO_POSTING_ENABLED=true
+SCHEDULING_DRY_RUN=false
+AUTOMATION_KILL_SWITCH=false
+```
+
+6. Run one live cycle manually and verify `live_scheduled_count=1`.
+7. Return to safe mode or keep frequency limits conservative.
+
 ## Quick Start: まずdry-runで動かす
 
 Postiz系のenvはユーザー入力済みである前提です。Postiz以外のMVP用envは `scripts/check_config.py` が安全に補完できます。
