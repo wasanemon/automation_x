@@ -75,7 +75,9 @@ Human approval is required when any are true:
 
 X API usage is read-only and limited to owned post lookup and metrics collection. X credentials are not required for startup, dry-run, or Postiz scheduling.
 
-Private or non-public metrics are collected only within 30 days of the post timestamp. Older posts are skipped.
+This MVP collects only public metrics available with Bearer Token access: impressions, likes, replies, reposts, quotes, and bookmarks. It does not collect URL clicks, profile clicks, organic metrics, promoted metrics, private metrics, or non-public metrics. Those require a future user-context authentication design.
+
+X post ID reconciliation uses normalized text similarity plus scheduled/created time proximity. It must not trigger replies, mentions, likes, follows, DMs, reposts, or keyword-based outreach.
 
 ## External API Safety
 

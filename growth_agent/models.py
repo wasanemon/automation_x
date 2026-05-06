@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -50,11 +50,20 @@ class Draft(Base, TimestampMixin):
     )
     duplicate_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     evaluation_notes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    hypothesis_id: Mapped[int | None] = mapped_column(
+        ForeignKey("hypotheses.id"), nullable=True
+    )
+    draft_import_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("draft_import_runs.id"), nullable=True
+    )
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     idea: Mapped[Idea] = relationship(back_populates="drafts")
     posts: Mapped[list["Post"]] = relationship(back_populates="draft")
+    hypothesis: Mapped["Hypothesis | None"] = relationship(back_populates="drafts")
+    draft_import_run: Mapped["DraftImportRun | None"] = relationship(back_populates="drafts")
 
 
 class Post(Base, TimestampMixin):
@@ -67,6 +76,12 @@ class Post(Base, TimestampMixin):
     postiz_post_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     postiz_integration_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     x_post_id: Mapped[str | None] = mapped_column(String(160), nullable=True, unique=True)
+    x_post_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    x_reconciled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     has_url: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -102,6 +117,64 @@ class Experiment(Base, TimestampMixin):
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
+class Hypothesis(Base, TimestampMixin):
+    __tablename__ = "hypotheses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    idea_id: Mapped[int | None] = mapped_column(ForeignKey("ideas.id"), nullable=True, index=True)
+    source: Mapped[str] = mapped_column(String(80), default="manual", index=True)
+    statement: Mapped[str] = mapped_column(Text)
+    target_metric: Mapped[str] = mapped_column(String(80), default="unknown")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="proposed", index=True)
+    evidence_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    idea: Mapped[Idea | None] = relationship()
+    drafts: Mapped[list["Draft"]] = relationship(back_populates="hypothesis")
+
+
+class DraftImportRun(Base):
+    __tablename__ = "draft_import_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str] = mapped_column(String(80), default="chatgpt_mcp", index=True)
+    idea_id: Mapped[int | None] = mapped_column(ForeignKey("ideas.id"), nullable=True, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="running", index=True)
+    prompt_version: Mapped[str] = mapped_column(String(80), default="mcp-v1")
+    input_context_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    hypotheses_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    output_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    imported_draft_ids_json: Mapped[list[int]] = mapped_column(JSON, default=list)
+    error_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    idea: Mapped[Idea | None] = relationship()
+    drafts: Mapped[list["Draft"]] = relationship(back_populates="draft_import_run")
+
+
+class DecisionLog(Base):
+    __tablename__ = "decision_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    automation_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("automation_runs.id"), nullable=True, index=True
+    )
+    draft_id: Mapped[int | None] = mapped_column(ForeignKey("drafts.id"), nullable=True, index=True)
+    post_id: Mapped[int | None] = mapped_column(ForeignKey("posts.id"), nullable=True, index=True)
+    stage: Mapped[str] = mapped_column(String(80), index=True)
+    decision: Mapped[str] = mapped_column(String(120), index=True)
+    reason_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    actor: Mapped[str] = mapped_column(String(80), default="growth_agent")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    automation_run: Mapped["AutomationRun | None"] = relationship()
+    draft: Mapped[Draft | None] = relationship()
+    post: Mapped[Post | None] = relationship()
+
+
 class PlaybookRule(Base, TimestampMixin):
     __tablename__ = "playbook_rules"
 
@@ -119,3 +192,33 @@ class FeedbackRun(Base, TimestampMixin):
     summary: Mapped[str] = mapped_column(Text)
     metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     recommendations_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+
+class AutomationRun(Base):
+    __tablename__ = "automation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="running", index=True)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=True)
+    auto_posting_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    kill_switch_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_drafts_count: Mapped[int] = mapped_column(Integer, default=0)
+    evaluated_drafts_count: Mapped[int] = mapped_column(Integer, default=0)
+    auto_schedule_candidates_count: Mapped[int] = mapped_column(Integer, default=0)
+    auto_scheduled_count: Mapped[int] = mapped_column(Integer, default=0)
+    dry_run_scheduled_count: Mapped[int] = mapped_column(Integer, default=0)
+    live_scheduled_count: Mapped[int] = mapped_column(Integer, default=0)
+    approval_required_count: Mapped[int] = mapped_column(Integer, default=0)
+    rejected_count: Mapped[int] = mapped_column(Integer, default=0)
+    duplicate_skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    frequency_limited_count: Mapped[int] = mapped_column(Integer, default=0)
+    reconciled_count: Mapped[int] = mapped_column(Integer, default=0)
+    metrics_collected_count: Mapped[int] = mapped_column(Integer, default=0)
+    metrics_skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    errors_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

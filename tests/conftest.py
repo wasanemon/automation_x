@@ -51,6 +51,7 @@ class MockXClient:
     def __init__(self) -> None:
         self.owned_posts: list[OwnedPost] = []
         self.metrics: dict[str, XMetrics] = {}
+        self.metric_errors: dict[str, Exception] = {}
         self.list_calls = 0
         self.metrics_calls: list[str] = []
 
@@ -60,6 +61,8 @@ class MockXClient:
 
     def get_post_metrics(self, x_post_id: str) -> XMetrics:
         self.metrics_calls.append(x_post_id)
+        if x_post_id in self.metric_errors:
+            raise self.metric_errors[x_post_id]
         return self.metrics.get(
             x_post_id,
             XMetrics(impressions=100, likes=5, replies=1, reposts=2, quotes=0, bookmarks=1),

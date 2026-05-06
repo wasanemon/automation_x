@@ -6,6 +6,8 @@ The Growth Agent service coordinates the marketing learning loop while delegatin
 flowchart LR
     Sources[Idea Sources] --> N8N[n8n Workflows]
     N8N -->|POST /ideas/ingest| Agent[Growth Agent FastAPI]
+    ChatGPT[Codex / ChatGPT] --> MCP[MCP Server]
+    MCP -->|memory, status, create idea, import drafts| Agent
     Agent --> DB[(PostgreSQL)]
     Agent --> Drafts[Draft Generator]
     Drafts --> Agent
@@ -23,16 +25,22 @@ flowchart LR
     Agent --> Feedback[Feedback Engine]
     Feedback --> Playbook[Playbook Rules]
     Playbook --> Drafts
+    Agent --> Memory[Operational Memory]
+    Memory --> DB
+    DB --> Memory
+    Memory --> MCP
     Agent --> Reports[Weekly Report]
     Reports --> N8N
 ```
 
 ## Service Boundaries
 
-- Growth Agent stores ideas, drafts, posts, metrics, experiments, playbook rules, and feedback runs.
+- Growth Agent stores ideas, drafts, posts, metrics, hypotheses, draft import runs, decision logs, experiments, playbook rules, and feedback runs.
 - Postiz handles publishing and scheduling to the configured test X account.
 - n8n handles orchestration, human approvals, timers, and notifications.
-- X API is read-only in this MVP and used only for owned post reconciliation and metrics collection.
+- Codex / ChatGPT can generate hypotheses and draft candidates through the MCP server, but Growth Agent still owns evaluation, approval state, scheduling gates, and history.
+- Codex / ChatGPT conversation history is not the source of truth; Growth Agent DB stores the official operational memory.
+- X API is read-only in this MVP and used only for owned post reconciliation and public metrics collection.
 - `GET /health` is public. Other endpoints require `GROWTH_AGENT_API_KEY` unless `TESTING=true`; non-health GET endpoints can be made public only with `SAFE_PUBLIC_READS=true`.
 
 ## Configuration Flow
@@ -50,12 +58,27 @@ Postiz variables are treated as user-provided:
 
 ## Data Flow
 
-1. n8n or an operator ingests ideas through `POST /ideas/ingest`.
-2. Growth Agent generates deterministic MVP drafts from the idea plus active playbook rules.
+1. n8n, Codex / ChatGPT through MCP, or an operator ingests ideas through `POST /ideas/ingest`.
+2. Growth Agent can generate deterministic MVP drafts, or Codex / ChatGPT can import generated candidates, hypotheses, and context snapshots through `POST /drafts/import`.
 3. The evaluator scores risk, tags URL-bearing drafts, and checks duplicate or near-duplicate content.
-4. Safe low-risk drafts can be scheduled; medium/high-risk drafts require human approval.
+4. Safe low-risk drafts can be scheduled; medium/high-risk drafts and MCP candidates marked for human review require approval.
 5. In dry-run, scheduling creates a local post record with `dry_run=true`.
 6. In live test mode, scheduling creates a local in-progress record before calling Postiz, then stores the Postiz post ID.
-7. Scheduled posts can be reconciled with owned X IDs manually or by owned lookup when X credentials exist.
-8. Metrics snapshots feed the feedback engine. Missing X credentials cause metrics collection to skip safely.
-9. Feedback updates playbook rule weights and informs later draft generation.
+7. Scheduled posts can be reconciled with owned X IDs manually, or automatically by comparing normalized text similarity plus scheduled/created time proximity against recent owned X posts.
+8. Metrics snapshots store public metrics from X only: impressions, likes, replies, reposts, quotes, and bookmarks. Missing X credentials cause metrics collection to skip safely and do not affect startup, dry-run, or Postiz scheduling.
+9. `decision_logs` record deterministic decisions across draft import, evaluate, schedule, reconcile, and metrics collection.
+10. Feedback updates playbook rule weights and informs later deterministic or Codex / ChatGPT generation.
+11. Codex / ChatGPT uses `GET /memory/context` through MCP to read compact history for the next cycle.
+
+## Operational Memory
+
+Operational memory is stored in PostgreSQL and exposed through safe read APIs:
+
+- `hypotheses`: proposed/tested hypotheses, target metrics, confidence, evidence, and metadata.
+- `draft_import_runs`: context snapshot, prompt version, imported draft IDs, and generated output from Codex/MCP import operations.
+- `decision_logs`: machine-readable decisions for `draft_import`, `evaluate`, `approval`, `schedule`, `reconcile`, and `metrics`.
+- `GET /memory/context`: compact bundle of metrics summary, playbook rules, recent hypotheses, recent import runs, recent decisions, and recent automation runs.
+
+This keeps long-term learning in the application database rather than relying on a single Codex or ChatGPT window.
+
+Private metrics, URL clicks, profile clicks, organic metrics, promoted metrics, and non-public metrics are future extensions that require an appropriate user-context authentication boundary.

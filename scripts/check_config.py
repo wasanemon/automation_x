@@ -11,11 +11,19 @@ EXAMPLE_PATH = Path(".env.example")
 DEFAULTS = {
     "TESTING": "false",
     "SCHEDULING_DRY_RUN": "true",
+    "AUTO_POSTING_ENABLED": "false",
+    "AUTOMATION_KILL_SWITCH": "false",
+    "MAX_AUTO_SCHEDULE_PER_CYCLE": "1",
+    "MAX_AUTO_SCHEDULE_PER_DAY": "3",
+    "MIN_HOURS_BETWEEN_AUTO_POSTS": "4",
+    "DEFAULT_SCHEDULE_DELAY_MINUTES": "30",
     "REQUEST_TIMEOUT_SECONDS": "10",
     "MAX_EXTERNAL_RETRIES": "2",
     "OWNED_DOMAINS": "",
     "SAFE_PUBLIC_READS": "false",
     "AUTO_APPLY_TENTATIVE_RULES": "false",
+    "X_RECONCILE_LOOKBACK_HOURS": "48",
+    "X_RECONCILE_TEXT_SIMILARITY_THRESHOLD": "0.82",
 }
 
 DRY_RUN_REQUIRED = ("DATABASE_URL", "GROWTH_AGENT_API_KEY", "SCHEDULING_DRY_RUN")
@@ -32,6 +40,12 @@ DISPLAY_KEYS = (
     "TESTING",
     "GROWTH_AGENT_API_KEY",
     "SCHEDULING_DRY_RUN",
+    "AUTO_POSTING_ENABLED",
+    "AUTOMATION_KILL_SWITCH",
+    "MAX_AUTO_SCHEDULE_PER_CYCLE",
+    "MAX_AUTO_SCHEDULE_PER_DAY",
+    "MIN_HOURS_BETWEEN_AUTO_POSTS",
+    "DEFAULT_SCHEDULE_DELAY_MINUTES",
     "POSTIZ_BASE_URL",
     "POSTIZ_API_KEY",
     "POSTIZ_X_INTEGRATION_ID",
@@ -42,6 +56,8 @@ DISPLAY_KEYS = (
     "X_API_BASE_URL",
     "X_BEARER_TOKEN",
     "X_USER_ID",
+    "X_RECONCILE_LOOKBACK_HOURS",
+    "X_RECONCILE_TEXT_SIMILARITY_THRESHOLD",
     "REQUEST_TIMEOUT_SECONDS",
     "MAX_EXTERNAL_RETRIES",
 )
@@ -50,8 +66,17 @@ SECRET_KEYS = {"GROWTH_AGENT_API_KEY", "POSTIZ_API_KEY", "X_BEARER_TOKEN"}
 VALUE_OK_TO_PRINT = {
     "TESTING",
     "SCHEDULING_DRY_RUN",
+    "AUTO_POSTING_ENABLED",
+    "AUTOMATION_KILL_SWITCH",
+    "MAX_AUTO_SCHEDULE_PER_CYCLE",
+    "MAX_AUTO_SCHEDULE_PER_DAY",
+    "MIN_HOURS_BETWEEN_AUTO_POSTS",
+    "DEFAULT_SCHEDULE_DELAY_MINUTES",
     "SAFE_PUBLIC_READS",
     "AUTO_APPLY_TENTATIVE_RULES",
+    "X_USER_ID",
+    "X_RECONCILE_LOOKBACK_HOURS",
+    "X_RECONCILE_TEXT_SIMILARITY_THRESHOLD",
     "REQUEST_TIMEOUT_SECONDS",
     "MAX_EXTERNAL_RETRIES",
 }
@@ -72,6 +97,8 @@ def main() -> int:
     postiz_missing = missing(effective, POSTIZ_REQUIRED)
     x_missing = missing(effective, X_METRICS_REQUIRED)
     dry_run_enabled = parse_bool(effective.get("SCHEDULING_DRY_RUN"), default=True)
+    auto_posting_enabled = parse_bool(effective.get("AUTO_POSTING_ENABLED"), default=False)
+    kill_switch_enabled = parse_bool(effective.get("AUTOMATION_KILL_SWITCH"), default=False)
 
     print("Growth Agent configuration check")
     print(f".env: {'created from .env.example' if env_created else 'found'}")
@@ -86,7 +113,7 @@ def main() -> int:
     print("\nReadiness:")
     print(f"- dry-run flow: {ready_label(not dry_run_missing and dry_run_enabled)}")
     print(f"- Postiz test scheduling config: {ready_label(not postiz_missing)}")
-    print(f"- X metrics collection config: {ready_label(not x_missing)}")
+    print(f"- X metrics ready: {ready_label(not x_missing)}")
 
     print("\nSettings:")
     for key in DISPLAY_KEYS:
@@ -108,6 +135,8 @@ def main() -> int:
 
     warnings = build_warnings(
         dry_run_enabled=dry_run_enabled,
+        auto_posting_enabled=auto_posting_enabled,
+        kill_switch_enabled=kill_switch_enabled,
         postiz_missing=postiz_missing,
         x_missing=x_missing,
         owned_domains=effective.get("OWNED_DOMAINS", ""),
@@ -204,9 +233,7 @@ def display_value(key: str, value: str | None) -> str:
         return "unset"
     assert value is not None
     if key in SECRET_KEYS:
-        suffix = value[-4:] if len(value) >= 4 else "set"
-        prefix = "ga_" if key == "GROWTH_AGENT_API_KEY" and value.startswith("ga_") else ""
-        return f"set: {prefix}****{suffix}"
+        return "set: ****"
     if key in VALUE_OK_TO_PRINT:
         return value
     return "set"
@@ -215,6 +242,8 @@ def display_value(key: str, value: str | None) -> str:
 def build_warnings(
     *,
     dry_run_enabled: bool,
+    auto_posting_enabled: bool,
+    kill_switch_enabled: bool,
     postiz_missing: list[str],
     x_missing: list[str],
     owned_domains: str,
@@ -224,6 +253,10 @@ def build_warnings(
         warnings.append("SCHEDULING_DRY_RUN=true, so scheduling creates only local post records.")
     else:
         warnings.append("SCHEDULING_DRY_RUN=false, so approved schedules call Postiz.")
+    if not auto_posting_enabled:
+        warnings.append("AUTO_POSTING_ENABLED=false, so automation will not call Postiz live.")
+    if kill_switch_enabled:
+        warnings.append("AUTOMATION_KILL_SWITCH=true, so automation scheduling is paused.")
     if postiz_missing:
         warnings.append("Postiz live test scheduling needs the missing Postiz variables above.")
     if x_missing:

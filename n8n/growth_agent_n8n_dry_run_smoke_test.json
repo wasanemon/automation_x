@@ -1,0 +1,110 @@
+{
+  "name": "Growth Agent - Dry Run Smoke Test",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{$vars.GROWTH_AGENT_BASE_URL + '/automation/status'}}",
+        "options": {}
+      },
+      "id": "get-status",
+      "name": "GET automation status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => ({ json: { ...item.json, gate_allowed: item.json.kill_switch_active === false && item.json.scheduling_dry_run === true } }));"
+      },
+      "id": "gate-code",
+      "name": "Gate dry-run safety",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "gate-allowed",
+              "leftValue": "={{$json.gate_allowed}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-gate",
+      "name": "Gate OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{$vars.GROWTH_AGENT_BASE_URL + '/automation/run-cycle'}}",
+        "options": {}
+      },
+      "id": "run-cycle",
+      "name": "POST run cycle",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, -80]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => ({ json: { workflow: 'dry_run_smoke_test', ok: true, dry_run: item.json.dry_run, cycle_id: item.json.cycle_id, created_drafts_count: item.json.created_drafts_count, evaluated_drafts_count: item.json.evaluated_drafts_count, auto_schedule_candidates_count: item.json.auto_schedule_candidates_count, dry_run_scheduled_count: item.json.dry_run_scheduled_count, live_scheduled_count: item.json.live_scheduled_count, approval_required_count: item.json.approval_required_count, errors: item.json.errors || [], next_recommended_action: item.json.next_recommended_action } }));"
+      },
+      "id": "summary",
+      "name": "Format summary JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, -80]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{ "node": "GET automation status", "type": "main", "index": 0 }]]
+    },
+    "GET automation status": {
+      "main": [[{ "node": "Gate dry-run safety", "type": "main", "index": 0 }]]
+    },
+    "Gate dry-run safety": {
+      "main": [[{ "node": "Gate OK?", "type": "main", "index": 0 }]]
+    },
+    "Gate OK?": {
+      "main": [[{ "node": "POST run cycle", "type": "main", "index": 0 }], []]
+    },
+    "POST run cycle": {
+      "main": [[{ "node": "Format summary JSON", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

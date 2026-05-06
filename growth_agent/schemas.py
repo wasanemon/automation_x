@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class IdeaIngestRequest(BaseModel):
@@ -30,6 +30,73 @@ class DraftGenerateRequest(BaseModel):
     count: int = Field(default=3, ge=1, le=5)
 
 
+TargetMetric = Literal[
+    "impressions",
+    "likes",
+    "replies",
+    "reposts",
+    "quotes",
+    "bookmarks",
+    "engagement_rate",
+    "unknown",
+]
+
+HypothesisStatus = Literal[
+    "proposed",
+    "active",
+    "tested",
+    "won",
+    "lost",
+    "inconclusive",
+    "archived",
+]
+
+
+class HypothesisInput(BaseModel):
+    statement: str = Field(min_length=1, max_length=1200)
+    target_metric: TargetMetric = "unknown"
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    status: HypothesisStatus = "proposed"
+    evidence: list[str] = Field(default_factory=list, max_length=10)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("statement")
+    @classmethod
+    def validate_statement(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("statement must not be blank.")
+        return stripped
+
+
+class ImportedDraftItem(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+    hypothesis: str | None = Field(default=None, max_length=1000)
+    hypothesis_index: int | None = Field(default=None, ge=0, le=20)
+    target_metric: TargetMetric = "unknown"
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    risk_notes: list[str] = Field(default_factory=list, max_length=10)
+    requires_human_review_by_model: bool = False
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("content must not be blank.")
+        return stripped
+
+
+class DraftImportRequest(BaseModel):
+    idea_id: int
+    drafts: list[ImportedDraftItem] = Field(min_length=1, max_length=5)
+    source: str = Field(default="chatgpt_mcp", max_length=80)
+    prompt_version: str = Field(default="mcp-v1", max_length=80)
+    context_snapshot: dict[str, Any] = Field(default_factory=dict)
+    hypotheses: list[HypothesisInput] = Field(default_factory=list, max_length=10)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class DraftResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -43,8 +110,18 @@ class DraftResponse(BaseModel):
     requires_approval: bool
     duplicate_of_draft_id: int | None
     duplicate_reason: str | None
+    hypothesis_id: int | None
+    draft_import_run_id: int | None
+    metadata_json: dict[str, Any]
     evaluation_notes: list[str]
     created_at: datetime
+
+
+class DraftImportResponse(BaseModel):
+    imported_count: int
+    draft_import_run_id: int | None = None
+    hypothesis_ids: list[int] = Field(default_factory=list)
+    drafts: list[DraftResponse]
 
 
 class EvaluationResponse(BaseModel):
@@ -76,6 +153,8 @@ class PostResponse(BaseModel):
     postiz_post_id: str | None
     postiz_integration_id: str | None
     x_post_id: str | None
+    x_post_created_at: datetime | None
+    x_reconciled_at: datetime | None
     scheduled_for: datetime
     published_at: datetime | None
     has_url: bool
@@ -87,27 +166,81 @@ class ReconcileMapping(BaseModel):
     post_id: int
     x_post_id: str = Field(min_length=1, max_length=160)
 
+    @field_validator("x_post_id")
+    @classmethod
+    def validate_x_post_id(cls, value: str) -> str:
+        if not value.isdecimal():
+            raise ValueError("x_post_id must be a numeric string.")
+        return value
+
 
 class ReconcileRequest(BaseModel):
     mappings: list[ReconcileMapping] = Field(default_factory=list)
-    lookback_days: int = Field(default=7, ge=1, le=30)
+    lookback_hours: int | None = Field(default=None, ge=1, le=24 * 30)
+    lookback_days: int | None = Field(default=None, ge=1, le=30)
+    force: bool = False
+
+
+class ReconcileResultItem(BaseModel):
+    post_id: int | None = None
+    status: Literal["matched", "skipped", "ambiguous", "error"]
+    x_post_id: str | None = None
+    score: float | None = None
+    reason: str | None = None
 
 
 class ReconcileResponse(BaseModel):
     reconciled: int
+    matched: int
+    skipped: int
+    ambiguous: int
+    errors: list[ReconcileResultItem] = Field(default_factory=list)
+    results: list[ReconcileResultItem] = Field(default_factory=list)
     posts: list[PostResponse]
 
 
 class MetricsCollectRequest(BaseModel):
+    post_id: int | None = None
     post_ids: list[int] | None = None
+
+
+class MetricsCollectResultItem(BaseModel):
+    post_id: int
+    status: Literal["collected", "skipped", "error"]
+    x_post_id: str | None = None
+    reason: str | None = None
 
 
 class MetricsCollectResponse(BaseModel):
     collected: int
     skipped: int
+    errors: int = 0
+    results: list[MetricsCollectResultItem] = Field(default_factory=list)
+
+
+class MetricsTopPost(BaseModel):
+    post_id: int
+    x_post_id: str
+    text_preview: str
+    impressions: int
+    likes: int
+    replies: int
+    reposts: int
+    quotes: int
+    bookmarks: int
 
 
 class MetricsSummaryResponse(BaseModel):
+    total_posts_with_metrics: int
+    latest_snapshot_count: int
+    total_impressions: int
+    total_likes: int
+    total_reposts: int
+    total_replies: int
+    total_quotes: int
+    total_bookmarks: int
+    average_engagement_rate: float
+    top_posts: list[MetricsTopPost]
     posts: int
     impressions: int
     likes: int
@@ -139,3 +272,131 @@ class WeeklyReportResponse(BaseModel):
     period_start: datetime
     period_end: datetime
     report: str
+
+
+class HypothesisResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    idea_id: int | None
+    source: str
+    statement: str
+    target_metric: str
+    confidence: float | None
+    status: str
+    evidence_json: list[str]
+    metadata_json: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class DraftImportRunResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    source: str
+    idea_id: int | None
+    started_at: datetime
+    finished_at: datetime | None
+    status: str
+    prompt_version: str
+    input_context_json: dict[str, Any]
+    hypotheses_json: list[dict[str, Any]]
+    output_json: dict[str, Any]
+    imported_draft_ids_json: list[int]
+    error_json: list[dict[str, Any]]
+    metadata_json: dict[str, Any]
+
+
+class DecisionLogResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    automation_run_id: int | None
+    draft_id: int | None
+    post_id: int | None
+    stage: str
+    decision: str
+    reason_json: dict[str, Any]
+    actor: str
+    created_at: datetime
+
+
+class AutomationRunHistoryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    started_at: datetime
+    finished_at: datetime | None
+    status: str
+    dry_run: bool
+    auto_posting_enabled: bool
+    kill_switch_active: bool
+    created_drafts_count: int
+    evaluated_drafts_count: int
+    auto_schedule_candidates_count: int
+    auto_scheduled_count: int
+    dry_run_scheduled_count: int
+    live_scheduled_count: int
+    approval_required_count: int
+    rejected_count: int
+    duplicate_skipped_count: int
+    frequency_limited_count: int
+    reconciled_count: int
+    metrics_collected_count: int
+    metrics_skipped_count: int
+    skipped_count: int
+    error_json: list[dict[str, Any]]
+    errors_json: list[str]
+    summary_json: dict[str, Any]
+    metadata_json: dict[str, Any]
+
+
+class AutomationCycleResponse(BaseModel):
+    cycle_id: int
+    created_drafts_count: int
+    evaluated_drafts_count: int
+    auto_schedule_candidates_count: int
+    auto_scheduled_count: int
+    dry_run_scheduled_count: int
+    live_scheduled_count: int
+    approval_required_count: int
+    rejected_count: int
+    duplicate_skipped_count: int
+    frequency_limited_count: int
+    reconciled_count: int
+    metrics_collected_count: int
+    metrics_skipped_count: int
+    skipped_count: int
+    errors: list[str] = Field(default_factory=list)
+    error_details: list[dict[str, Any]] = Field(default_factory=list)
+    next_recommended_action: str
+    dry_run: bool
+    kill_switch_active: bool
+
+
+class AutomationStatusResponse(BaseModel):
+    auto_posting_enabled: bool
+    scheduling_dry_run: bool
+    kill_switch_active: bool
+    today_auto_scheduled_count: int
+    max_auto_schedule_per_day: int
+    max_auto_schedule_per_cycle: int
+    min_hours_between_auto_posts: int
+    next_post_available_at: datetime | None
+    approval_waiting_draft_count: int
+    unreconciled_post_count: int
+    metrics_missing_post_count: int
+    last_automation_run: AutomationRunHistoryResponse | None
+    warnings: list[str]
+    system_warnings: list[str]
+
+
+class MemoryContextResponse(BaseModel):
+    metrics_summary: dict[str, Any]
+    playbook_rules: list[PlaybookRuleResponse]
+    recent_hypotheses: list[HypothesisResponse]
+    recent_draft_import_runs: list[DraftImportRunResponse]
+    recent_decision_logs: list[DecisionLogResponse]
+    recent_automation_runs: list[AutomationRunHistoryResponse]
+    last_automation_run: AutomationRunHistoryResponse | None

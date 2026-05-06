@@ -1,0 +1,119 @@
+{
+  "name": "Growth Agent - Live Scheduled Cycle",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{$vars.GROWTH_AGENT_BASE_URL + '/automation/status'}}",
+        "options": {}
+      },
+      "id": "get-status",
+      "name": "GET automation status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => ({ json: { ...item.json, gate_allowed: item.json.kill_switch_active === false && item.json.auto_posting_enabled === true && item.json.scheduling_dry_run === false } }));"
+      },
+      "id": "gate-code",
+      "name": "Gate live safety",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "gate-allowed",
+              "leftValue": "={{$json.gate_allowed}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-gate",
+      "name": "Gate OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{$vars.GROWTH_AGENT_BASE_URL + '/automation/run-cycle'}}",
+        "options": {}
+      },
+      "id": "run-cycle",
+      "name": "POST run cycle",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, -80]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => { const errors = item.json.errors || []; const needsAttention = (item.json.approval_required_count || 0) > 0 || errors.length > 0; return { json: { workflow: 'live_scheduled_cycle', ok: errors.length === 0, needs_attention: needsAttention, dry_run: item.json.dry_run, cycle_id: item.json.cycle_id, auto_schedule_candidates_count: item.json.auto_schedule_candidates_count, dry_run_scheduled_count: item.json.dry_run_scheduled_count, live_scheduled_count: item.json.live_scheduled_count, approval_required_count: item.json.approval_required_count, duplicate_skipped_count: item.json.duplicate_skipped_count, frequency_limited_count: item.json.frequency_limited_count, reconciled_count: item.json.reconciled_count, metrics_collected_count: item.json.metrics_collected_count, metrics_skipped_count: item.json.metrics_skipped_count, errors, next_recommended_action: item.json.next_recommended_action } }; });"
+      },
+      "id": "summary",
+      "name": "Format summary JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, -80]
+    }
+  ],
+  "connections": {
+    "Every 6 Hours": {
+      "main": [[{ "node": "GET automation status", "type": "main", "index": 0 }]]
+    },
+    "GET automation status": {
+      "main": [[{ "node": "Gate live safety", "type": "main", "index": 0 }]]
+    },
+    "Gate live safety": {
+      "main": [[{ "node": "Gate OK?", "type": "main", "index": 0 }]]
+    },
+    "Gate OK?": {
+      "main": [[{ "node": "POST run cycle", "type": "main", "index": 0 }], []]
+    },
+    "POST run cycle": {
+      "main": [[{ "node": "Format summary JSON", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
