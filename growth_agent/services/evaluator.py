@@ -1,10 +1,11 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from growth_agent.config import Settings
 from growth_agent.models import Draft, Post
+from growth_agent.services.draft_imports import requires_mcp_human_review
 from growth_agent.services.text import (
     extract_url_domains,
     is_owned_domain,
@@ -171,7 +172,21 @@ class DraftEvaluator:
         )
 
     def apply(self, db: Session, draft: Draft) -> EvaluationResult:
+        existing_notes = list(draft.evaluation_notes or [])
+        force_human_review = requires_mcp_human_review(existing_notes)
         result = self.evaluate(db, draft)
+        notes = _merge_notes(existing_notes, result.notes)
+        if force_human_review:
+            result = replace(
+                result,
+                requires_approval=True,
+                notes=_merge_notes(
+                    notes,
+                    ["Human approval required by MCP model self-check."],
+                ),
+            )
+        elif existing_notes:
+            result = replace(result, notes=notes)
         draft.score = result.score
         draft.risk_level = result.risk_level
         draft.has_url = result.has_url
@@ -244,3 +259,14 @@ class DraftEvaluator:
         if score < 80:
             return "medium"
         return "low"
+
+
+def _merge_notes(*note_groups: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for notes in note_groups:
+        for note in notes:
+            if note not in seen:
+                merged.append(note)
+                seen.add(note)
+    return merged

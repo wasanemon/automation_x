@@ -30,6 +30,38 @@ class DraftGenerateRequest(BaseModel):
     count: int = Field(default=3, ge=1, le=5)
 
 
+class ImportedDraftItem(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+    hypothesis: str | None = Field(default=None, max_length=1000)
+    target_metric: Literal[
+        "impressions",
+        "likes",
+        "replies",
+        "reposts",
+        "quotes",
+        "bookmarks",
+        "engagement_rate",
+        "unknown",
+    ] = "unknown"
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    risk_notes: list[str] = Field(default_factory=list, max_length=10)
+    requires_human_review_by_model: bool = False
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("content must not be blank.")
+        return stripped
+
+
+class DraftImportRequest(BaseModel):
+    idea_id: int
+    drafts: list[ImportedDraftItem] = Field(min_length=1, max_length=5)
+    source: str = Field(default="chatgpt_mcp", max_length=80)
+
+
 class DraftResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -45,6 +77,11 @@ class DraftResponse(BaseModel):
     duplicate_reason: str | None
     evaluation_notes: list[str]
     created_at: datetime
+
+
+class DraftImportResponse(BaseModel):
+    imported_count: int
+    drafts: list[DraftResponse]
 
 
 class EvaluationResponse(BaseModel):

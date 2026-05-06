@@ -15,6 +15,8 @@ from growth_agent.schemas import (
     AutomationCycleResponse,
     AutomationStatusResponse,
     DraftGenerateRequest,
+    DraftImportRequest,
+    DraftImportResponse,
     DraftResponse,
     EvaluationResponse,
     FeedbackRunResponse,
@@ -34,6 +36,7 @@ from growth_agent.schemas import (
     WeeklyReportResponse,
 )
 from growth_agent.services.automation import automation_status, run_automation_cycle
+from growth_agent.services.draft_imports import DraftImportSafetyError, import_draft_candidates
 from growth_agent.services.drafts import create_drafts_for_idea
 from growth_agent.services.evaluator import DraftEvaluator
 from growth_agent.services.feedback import active_playbook_rules, run_feedback
@@ -87,6 +90,29 @@ def generate_drafts(payload: DraftGenerateRequest, db: Session = Depends(get_db)
     if idea is None:
         raise HTTPException(status_code=404, detail="Idea not found.")
     return create_drafts_for_idea(db, idea, payload.count)
+
+
+@app.post(
+    "/drafts/import",
+    response_model=DraftImportResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_api_key)],
+)
+def import_generated_drafts(
+    payload: DraftImportRequest,
+    db: Session = Depends(get_db),
+) -> DraftImportResponse:
+    idea = db.get(Idea, payload.idea_id)
+    if idea is None:
+        raise HTTPException(status_code=404, detail="Idea not found.")
+    try:
+        drafts = import_draft_candidates(db, idea, payload, get_settings())
+    except DraftImportSafetyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return DraftImportResponse(
+        imported_count=len(drafts),
+        drafts=[DraftResponse.model_validate(draft) for draft in drafts],
+    )
 
 
 @app.post(
