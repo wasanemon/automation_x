@@ -2,6 +2,8 @@
 
 Growth Agent は、X向けの投稿運用を安全に半自動化するためのMVPサービスです。
 
+日々の使用手順だけを見たい場合は [docs/operation_runbook.md](docs/operation_runbook.md) を参照してください。
+
 このリポジトリが担当する中心ループは次の通りです。
 
 ```text
