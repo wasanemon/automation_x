@@ -57,8 +57,8 @@ Codex / ChatGPT
 
 - **n8n Cloud**: cron実行、手動dry-run/live workflow、将来のapproval通知や運用通知。
 - **Codex / ChatGPT + MCP server**: ChatGPT/Codexのプラン内のモデル実行で仮説分析とdraft候補作成を行い、Growth Agentへimportします。
-- **Growth Agent API**: idea ingestion、draft生成、evaluate、安全判定、重複チェック、schedule判定、run履歴、reconcile、metrics collect、summary。
-- **PostgreSQL**: ideas、drafts、posts、metrics snapshots、feedback/playbook、automation run historyの永続保存。
+- **Growth Agent API**: idea ingestion、draft生成、evaluate、安全判定、重複チェック、schedule判定、run履歴、reconcile、metrics collect、summary、運用記憶の読み取り。
+- **PostgreSQL**: ideas、drafts、posts、metrics snapshots、feedback/playbook、automation run history、hypotheses、draft import runs、decision logsの永続保存。
 - **Postiz**: Xへの唯一の投稿・予約投稿経路。
 - **X API**: read-onlyのowned post lookupとpublic metrics取得。
 
@@ -81,6 +81,10 @@ MCP serverが提供する主なtool:
 - `get_automation_status`
 - `get_metrics_summary`
 - `get_playbook`
+- `get_memory_context`
+- `list_hypotheses`
+- `list_draft_import_runs`
+- `list_decision_logs`
 - `create_idea`
 - `import_generated_drafts`
 - `evaluate_draft`
@@ -96,6 +100,16 @@ MCP方式でも、以下は変わりません。
 - X投稿・予約投稿はPostiz経由だけです。
 - imported draftも evaluator score、risk、URL、duplicate、frequency limit、dry-run/live gate、kill switch を通ります。
 - ChatGPT/Codexが `requires_human_review_by_model=true` としたdraft、またはconfidenceが低いdraftはhuman approvalへ回ります。
+- Codexの会話履歴に依存せず、仮説、draft import context、deterministic decisionはGrowth Agent DBへ保存します。
+
+運用記憶用API:
+
+- `GET /memory/context`: Codexが次cycleで読むためのcompact context。
+- `GET /hypotheses`: 保存済み仮説。
+- `GET /draft-import-runs`: Codex/MCPなどからのdraft import履歴。
+- `GET /decision-logs`: evaluate、schedule、reconcile、metricsなどの判断履歴。
+
+`POST /drafts/import` は、draft本文だけでなく `context_snapshot`、`hypotheses`、`prompt_version`、`metadata` も受け取り、`hypotheses`、`draft_import_runs`、`decision_logs` に保存します。secret値を含むpayloadは保存しないでください。既知の設定済みsecretがpayload内に含まれる場合はimportを拒否します。
 
 詳細は [docs/codex_mcp.md](docs/codex_mcp.md) を参照してください。
 

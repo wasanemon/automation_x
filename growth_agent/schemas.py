@@ -30,19 +30,50 @@ class DraftGenerateRequest(BaseModel):
     count: int = Field(default=3, ge=1, le=5)
 
 
+TargetMetric = Literal[
+    "impressions",
+    "likes",
+    "replies",
+    "reposts",
+    "quotes",
+    "bookmarks",
+    "engagement_rate",
+    "unknown",
+]
+
+HypothesisStatus = Literal[
+    "proposed",
+    "active",
+    "tested",
+    "won",
+    "lost",
+    "inconclusive",
+    "archived",
+]
+
+
+class HypothesisInput(BaseModel):
+    statement: str = Field(min_length=1, max_length=1200)
+    target_metric: TargetMetric = "unknown"
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    status: HypothesisStatus = "proposed"
+    evidence: list[str] = Field(default_factory=list, max_length=10)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("statement")
+    @classmethod
+    def validate_statement(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("statement must not be blank.")
+        return stripped
+
+
 class ImportedDraftItem(BaseModel):
     content: str = Field(min_length=1, max_length=2000)
     hypothesis: str | None = Field(default=None, max_length=1000)
-    target_metric: Literal[
-        "impressions",
-        "likes",
-        "replies",
-        "reposts",
-        "quotes",
-        "bookmarks",
-        "engagement_rate",
-        "unknown",
-    ] = "unknown"
+    hypothesis_index: int | None = Field(default=None, ge=0, le=20)
+    target_metric: TargetMetric = "unknown"
     confidence: float | None = Field(default=None, ge=0, le=1)
     risk_notes: list[str] = Field(default_factory=list, max_length=10)
     requires_human_review_by_model: bool = False
@@ -60,6 +91,10 @@ class DraftImportRequest(BaseModel):
     idea_id: int
     drafts: list[ImportedDraftItem] = Field(min_length=1, max_length=5)
     source: str = Field(default="chatgpt_mcp", max_length=80)
+    prompt_version: str = Field(default="mcp-v1", max_length=80)
+    context_snapshot: dict[str, Any] = Field(default_factory=dict)
+    hypotheses: list[HypothesisInput] = Field(default_factory=list, max_length=10)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class DraftResponse(BaseModel):
@@ -75,12 +110,17 @@ class DraftResponse(BaseModel):
     requires_approval: bool
     duplicate_of_draft_id: int | None
     duplicate_reason: str | None
+    hypothesis_id: int | None
+    draft_import_run_id: int | None
+    metadata_json: dict[str, Any]
     evaluation_notes: list[str]
     created_at: datetime
 
 
 class DraftImportResponse(BaseModel):
     imported_count: int
+    draft_import_run_id: int | None = None
+    hypothesis_ids: list[int] = Field(default_factory=list)
     drafts: list[DraftResponse]
 
 
@@ -234,6 +274,54 @@ class WeeklyReportResponse(BaseModel):
     report: str
 
 
+class HypothesisResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    idea_id: int | None
+    source: str
+    statement: str
+    target_metric: str
+    confidence: float | None
+    status: str
+    evidence_json: list[str]
+    metadata_json: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class DraftImportRunResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    source: str
+    idea_id: int | None
+    started_at: datetime
+    finished_at: datetime | None
+    status: str
+    prompt_version: str
+    input_context_json: dict[str, Any]
+    hypotheses_json: list[dict[str, Any]]
+    output_json: dict[str, Any]
+    imported_draft_ids_json: list[int]
+    error_json: list[dict[str, Any]]
+    metadata_json: dict[str, Any]
+
+
+class DecisionLogResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    automation_run_id: int | None
+    draft_id: int | None
+    post_id: int | None
+    stage: str
+    decision: str
+    reason_json: dict[str, Any]
+    actor: str
+    created_at: datetime
+
+
 class AutomationRunHistoryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -302,3 +390,13 @@ class AutomationStatusResponse(BaseModel):
     last_automation_run: AutomationRunHistoryResponse | None
     warnings: list[str]
     system_warnings: list[str]
+
+
+class MemoryContextResponse(BaseModel):
+    metrics_summary: dict[str, Any]
+    playbook_rules: list[PlaybookRuleResponse]
+    recent_hypotheses: list[HypothesisResponse]
+    recent_draft_import_runs: list[DraftImportRunResponse]
+    recent_decision_logs: list[DecisionLogResponse]
+    recent_automation_runs: list[AutomationRunHistoryResponse]
+    last_automation_run: AutomationRunHistoryResponse | None

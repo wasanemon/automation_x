@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
@@ -9,19 +9,23 @@ from growth_agent.clients.x_api import XApiClient
 from growth_agent.config import get_settings
 from growth_agent.database import get_db
 from growth_agent.deps import get_postiz_client, get_x_client, require_api_key
-from growth_agent.models import Draft, Idea, Post
+from growth_agent.models import DecisionLog, Draft, DraftImportRun, Hypothesis, Idea, Post
 from growth_agent.schemas import (
     ApprovalRequest,
     AutomationCycleResponse,
     AutomationStatusResponse,
+    DecisionLogResponse,
     DraftGenerateRequest,
     DraftImportRequest,
     DraftImportResponse,
+    DraftImportRunResponse,
     DraftResponse,
     EvaluationResponse,
     FeedbackRunResponse,
+    HypothesisResponse,
     IdeaIngestRequest,
     IdeaResponse,
+    MemoryContextResponse,
     MetricsCollectRequest,
     MetricsCollectResponse,
     MetricsCollectResultItem,
@@ -40,6 +44,12 @@ from growth_agent.services.draft_imports import DraftImportSafetyError, import_d
 from growth_agent.services.drafts import create_drafts_for_idea
 from growth_agent.services.evaluator import DraftEvaluator
 from growth_agent.services.feedback import active_playbook_rules, run_feedback
+from growth_agent.services.memory import (
+    build_memory_context,
+    recent_decision_logs,
+    recent_draft_import_runs,
+    recent_hypotheses,
+)
 from growth_agent.services.metrics import collect_metrics, count_metric_candidates, metrics_summary
 from growth_agent.services.reconcile import apply_manual_mappings
 from growth_agent.services.reconcile import reconcile_x_ids as reconcile_posts
@@ -106,12 +116,14 @@ def import_generated_drafts(
     if idea is None:
         raise HTTPException(status_code=404, detail="Idea not found.")
     try:
-        drafts = import_draft_candidates(db, idea, payload, get_settings())
+        outcome = import_draft_candidates(db, idea, payload, get_settings())
     except DraftImportSafetyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return DraftImportResponse(
-        imported_count=len(drafts),
-        drafts=[DraftResponse.model_validate(draft) for draft in drafts],
+        imported_count=len(outcome.drafts),
+        draft_import_run_id=outcome.import_run.id,
+        hypothesis_ids=[hypothesis.id for hypothesis in outcome.hypotheses],
+        drafts=[DraftResponse.model_validate(draft) for draft in outcome.drafts],
     )
 
 
@@ -378,6 +390,61 @@ def collect_post_metrics(
 )
 def get_metrics_summary(db: Session = Depends(get_db)) -> dict[str, object]:
     return metrics_summary(db)
+
+
+@app.get(
+    "/memory/context",
+    response_model=MemoryContextResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def get_memory_context(
+    limit: int = Query(default=10, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return build_memory_context(db, limit=limit)
+
+
+@app.get(
+    "/hypotheses",
+    response_model=list[HypothesisResponse],
+    dependencies=[Depends(require_api_key)],
+)
+def list_hypotheses(
+    limit: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[Hypothesis]:
+    return recent_hypotheses(db, limit=limit)
+
+
+@app.get(
+    "/draft-import-runs",
+    response_model=list[DraftImportRunResponse],
+    dependencies=[Depends(require_api_key)],
+)
+def list_draft_import_runs(
+    limit: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[DraftImportRun]:
+    return recent_draft_import_runs(db, limit=limit)
+
+
+@app.get(
+    "/decision-logs",
+    response_model=list[DecisionLogResponse],
+    dependencies=[Depends(require_api_key)],
+)
+def list_decision_logs(
+    limit: int = Query(default=50, ge=1, le=100),
+    draft_id: int | None = Query(default=None, ge=1),
+    automation_run_id: int | None = Query(default=None, ge=1),
+    db: Session = Depends(get_db),
+) -> list[DecisionLog]:
+    return recent_decision_logs(
+        db,
+        limit=limit,
+        draft_id=draft_id,
+        automation_run_id=automation_run_id,
+    )
 
 
 @app.post(

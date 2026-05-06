@@ -14,6 +14,7 @@ from growth_agent.models import AutomationRun, Draft, Idea, MetricSnapshot, Post
 from growth_agent.schemas import AutomationCycleResponse, AutomationStatusResponse
 from growth_agent.services.drafts import create_drafts_for_idea
 from growth_agent.services.evaluator import DraftEvaluator
+from growth_agent.services.memory import create_decision_log
 from growth_agent.services.metrics import collect_metrics, count_metric_candidates
 from growth_agent.services.reconcile import reconcile_x_ids
 
@@ -85,11 +86,30 @@ def run_automation_cycle(
             summary["schedule_decisions"].append(
                 {"status": "skipped", "reason": "No unprocessed ideas were available."}
             )
+            create_decision_log(
+                db,
+                automation_run_id=run.id,
+                stage="draft_generation",
+                decision="skipped",
+                actor="automation",
+                reason={"reason": "No unprocessed ideas were available."},
+            )
+        else:
+            for draft in created_drafts:
+                create_decision_log(
+                    db,
+                    automation_run_id=run.id,
+                    draft_id=draft.id,
+                    stage="draft_generation",
+                    decision="created",
+                    actor="automation",
+                    reason={"idea_id": draft.idea_id},
+                )
 
         evaluator = DraftEvaluator(settings)
-        evaluated_drafts = _evaluate_generated_drafts(db, evaluator, errors, settings)
+        evaluated_drafts = _evaluate_generated_drafts(db, evaluator, errors, settings, run.id)
         counters.evaluated_drafts = len(evaluated_drafts)
-        counters.approval_required += _mark_approval_required(db, evaluated_drafts)
+        counters.approval_required += _mark_approval_required(db, evaluated_drafts, run.id)
         counters.rejected += sum(1 for draft in evaluated_drafts if draft.status == "rejected")
         counters.duplicate_skipped += _duplicate_skipped_draft_count(db)
 
@@ -104,11 +124,26 @@ def run_automation_cycle(
             errors,
             summary,
             live_scheduling_allowed=live_scheduling_allowed,
+            automation_run_id=run.id,
         )
 
         reconcile_outcome = reconcile_x_ids(db, x_client, settings)
         counters.reconciled = reconcile_outcome.matched
         counters.skipped += reconcile_outcome.skipped + reconcile_outcome.ambiguous
+        for item in reconcile_outcome.results:
+            create_decision_log(
+                db,
+                automation_run_id=run.id,
+                post_id=item.post_id,
+                stage="reconcile",
+                decision=item.status,
+                actor="automation",
+                reason={
+                    "x_post_id": item.x_post_id,
+                    "score": item.score,
+                    "reason": item.reason,
+                },
+            )
         for item in reconcile_outcome.errors:
             errors.append(_error("reconcile", item.reason or "Reconcile failed.", settings))
 
@@ -118,6 +153,18 @@ def run_automation_cycle(
             counters.metrics_skipped = metrics_outcome.skipped
             counters.skipped += metrics_outcome.skipped
             for item in metrics_outcome.results:
+                create_decision_log(
+                    db,
+                    automation_run_id=run.id,
+                    post_id=item.post_id,
+                    stage="metrics",
+                    decision=item.status,
+                    actor="automation",
+                    reason={
+                        "x_post_id": item.x_post_id,
+                        "reason": item.reason,
+                    },
+                )
                 if item.status == "error":
                     errors.append(_error("metrics", item.reason or "Metrics failed.", settings))
         else:
@@ -130,6 +177,17 @@ def run_automation_cycle(
                     "reason": "X_BEARER_TOKEN is not configured.",
                     "skipped": skipped_metrics,
                 }
+                create_decision_log(
+                    db,
+                    automation_run_id=run.id,
+                    stage="metrics",
+                    decision="skipped",
+                    actor="automation",
+                    reason={
+                        "reason": "X_BEARER_TOKEN is not configured.",
+                        "skipped": skipped_metrics,
+                    },
+                )
 
         run.status = "completed_with_errors" if errors else "completed"
     except Exception as exc:  # pragma: no cover - protects run history for unexpected failures
@@ -235,6 +293,7 @@ def _evaluate_generated_drafts(
     evaluator: DraftEvaluator,
     errors: list[dict[str, Any]],
     settings: Settings,
+    automation_run_id: int,
 ) -> list[Draft]:
     drafts = list(
         db.scalars(
@@ -250,18 +309,56 @@ def _evaluate_generated_drafts(
             evaluator.apply(db, draft)
         except Exception as exc:  # pragma: no cover - defensive per-draft isolation
             errors.append(_error("evaluate", f"Draft {draft.id}: {exc}", settings))
+            create_decision_log(
+                db,
+                automation_run_id=automation_run_id,
+                draft_id=draft.id,
+                stage="evaluate",
+                decision="error",
+                actor="automation",
+                reason={"reason": str(exc)},
+            )
             continue
+        create_decision_log(
+            db,
+            automation_run_id=automation_run_id,
+            draft_id=draft.id,
+            stage="evaluate",
+            decision=_evaluation_decision(draft, evaluator),
+            actor="automation",
+            reason={
+                "score": draft.score,
+                "risk_level": draft.risk_level,
+                "requires_approval": draft.requires_approval,
+                "duplicate_of_draft_id": draft.duplicate_of_draft_id,
+                "duplicate_reason": draft.duplicate_reason,
+                "notes": draft.evaluation_notes,
+            },
+        )
         evaluated.append(draft)
     return evaluated
 
 
-def _mark_approval_required(db: Session, drafts: list[Draft]) -> int:
+def _mark_approval_required(db: Session, drafts: list[Draft], automation_run_id: int) -> int:
     count = 0
     for draft in drafts:
         if draft.requires_approval and draft.status != "rejected":
             draft.status = "approval_required"
             db.add(draft)
             count += 1
+            create_decision_log(
+                db,
+                automation_run_id=automation_run_id,
+                draft_id=draft.id,
+                stage="approval",
+                decision="approval_required",
+                actor="automation",
+                reason={
+                    "score": draft.score,
+                    "risk_level": draft.risk_level,
+                    "duplicate_of_draft_id": draft.duplicate_of_draft_id,
+                },
+            )
     if count:
         db.commit()
     return count
@@ -306,6 +403,7 @@ def _schedule_eligible_drafts(
     summary: dict[str, Any],
     *,
     live_scheduling_allowed: bool,
+    automation_run_id: int,
 ) -> None:
     if not candidates:
         return
@@ -320,6 +418,13 @@ def _schedule_eligible_drafts(
                     "reason": "AUTOMATION_KILL_SWITCH=true.",
                 }
             )
+            _log_schedule_decision(
+                db,
+                automation_run_id,
+                draft,
+                "skipped",
+                {"reason": "AUTOMATION_KILL_SWITCH=true."},
+            )
         return
 
     if settings.max_auto_schedule_per_cycle <= 0:
@@ -332,6 +437,13 @@ def _schedule_eligible_drafts(
                     "status": "skipped",
                     "reason": "MAX_AUTO_SCHEDULE_PER_CYCLE is 0.",
                 }
+            )
+            _log_schedule_decision(
+                db,
+                automation_run_id,
+                draft,
+                "frequency_limited",
+                {"reason": "MAX_AUTO_SCHEDULE_PER_CYCLE is 0."},
             )
         return
 
@@ -346,6 +458,13 @@ def _schedule_eligible_drafts(
                     "status": "skipped",
                     "reason": "MAX_AUTO_SCHEDULE_PER_DAY is 0.",
                 }
+            )
+            _log_schedule_decision(
+                db,
+                automation_run_id,
+                draft,
+                "frequency_limited",
+                {"reason": "MAX_AUTO_SCHEDULE_PER_DAY is 0."},
             )
         return
 
@@ -362,6 +481,13 @@ def _schedule_eligible_drafts(
                     "reason": "MAX_AUTO_SCHEDULE_PER_CYCLE reached.",
                 }
             )
+            _log_schedule_decision(
+                db,
+                automation_run_id,
+                draft,
+                "frequency_limited",
+                {"reason": "MAX_AUTO_SCHEDULE_PER_CYCLE reached."},
+            )
             continue
         if (
             limits.today_auto_scheduled_count + scheduled_this_cycle
@@ -375,6 +501,13 @@ def _schedule_eligible_drafts(
                     "status": "skipped",
                     "reason": "MAX_AUTO_SCHEDULE_PER_DAY reached.",
                 }
+            )
+            _log_schedule_decision(
+                db,
+                automation_run_id,
+                draft,
+                "frequency_limited",
+                {"reason": "MAX_AUTO_SCHEDULE_PER_DAY reached."},
             )
             continue
 
@@ -392,6 +525,13 @@ def _schedule_eligible_drafts(
             errors.append(_error("schedule", str(exc), settings, draft_id=draft.id))
             summary["schedule_decisions"].append(
                 {"draft_id": draft.id, "status": "error", "reason": "Postiz schedule failed."}
+            )
+            _log_schedule_decision(
+                db,
+                automation_run_id,
+                draft,
+                "error",
+                {"reason": "Postiz schedule failed."},
             )
             continue
 
@@ -418,6 +558,18 @@ def _schedule_eligible_drafts(
                 "status": "scheduled",
                 "dry_run": post.dry_run,
             }
+        )
+        _log_schedule_decision(
+            db,
+            automation_run_id,
+            draft,
+            "dry_run_scheduled" if post.dry_run else "live_scheduled",
+            {
+                "post_id": post.id,
+                "scheduled_for": _iso_utc(post.scheduled_for),
+                "dry_run": post.dry_run,
+            },
+            post_id=post.id,
         )
 
 
@@ -470,6 +622,39 @@ def _create_schedule_record(
     db.commit()
     db.refresh(post)
     return post
+
+
+def _evaluation_decision(draft: Draft, evaluator: DraftEvaluator) -> str:
+    if draft.duplicate_of_draft_id is not None:
+        return "duplicate"
+    if draft.requires_approval:
+        return "approval_required"
+    if evaluator.can_auto_schedule(draft):
+        return "auto_schedule_candidate"
+    if draft.status == "rejected":
+        return "rejected"
+    return "evaluated"
+
+
+def _log_schedule_decision(
+    db: Session,
+    automation_run_id: int,
+    draft: Draft,
+    decision: str,
+    reason: dict[str, Any],
+    *,
+    post_id: int | None = None,
+) -> None:
+    create_decision_log(
+        db,
+        automation_run_id=automation_run_id,
+        draft_id=draft.id,
+        post_id=post_id,
+        stage="schedule",
+        decision=decision,
+        actor="automation",
+        reason=reason,
+    )
 
 
 def _schedule_limits(db: Session, settings: Settings) -> ScheduleLimits:

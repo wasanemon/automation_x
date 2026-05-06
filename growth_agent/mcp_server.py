@@ -28,6 +28,44 @@ def get_playbook() -> dict[str, Any]:
 
 
 @mcp.tool()
+def get_memory_context(limit: int = 10) -> dict[str, Any]:
+    """Return the compact operational memory context Codex should use for generation."""
+    return _safe_call(lambda client: client.get_memory_context(limit=limit))
+
+
+@mcp.tool()
+def list_hypotheses(limit: int = 50) -> dict[str, Any]:
+    """Return recent stored hypotheses."""
+    return _safe_call(lambda client: {"hypotheses": client.list_hypotheses(limit=limit)})
+
+
+@mcp.tool()
+def list_draft_import_runs(limit: int = 50) -> dict[str, Any]:
+    """Return recent draft import runs created by Codex/MCP or other import sources."""
+    return _safe_call(
+        lambda client: {"draft_import_runs": client.list_draft_import_runs(limit=limit)}
+    )
+
+
+@mcp.tool()
+def list_decision_logs(
+    limit: int = 50,
+    draft_id: int | None = None,
+    automation_run_id: int | None = None,
+) -> dict[str, Any]:
+    """Return recent deterministic decision logs for audits and next-cycle analysis."""
+    return _safe_call(
+        lambda client: {
+            "decision_logs": client.list_decision_logs(
+                limit=limit,
+                draft_id=draft_id,
+                automation_run_id=automation_run_id,
+            )
+        }
+    )
+
+
+@mcp.tool()
 def create_idea(
     title: str,
     description: str,
@@ -52,13 +90,21 @@ def import_generated_drafts(
     idea_id: int,
     drafts: list[dict[str, Any]],
     source: str = "chatgpt_mcp",
+    prompt_version: str = "mcp-v1",
+    context_snapshot: dict[str, Any] | None = None,
+    hypotheses: list[dict[str, Any]] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Import ChatGPT/Codex-generated draft candidates; Growth Agent evaluates them later."""
+    """Import generated drafts and store the context/hypotheses that produced them."""
     return _safe_call(
         lambda client: client.import_generated_drafts(
             idea_id=idea_id,
             drafts=drafts,
             source=source,
+            prompt_version=prompt_version,
+            context_snapshot=context_snapshot,
+            hypotheses=hypotheses,
+            metadata=metadata,
         )
     )
 
