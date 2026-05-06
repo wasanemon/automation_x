@@ -52,6 +52,32 @@ class GrowthAgentMCPClient:
         data = self._request("GET", "/feedback/playbook")
         return data if isinstance(data, list) else []
 
+    def get_memory_context(self, *, limit: int = 10) -> dict[str, Any]:
+        return self._request("GET", f"/memory/context?limit={limit}")
+
+    def list_hypotheses(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        data = self._request("GET", f"/hypotheses?limit={limit}")
+        return data if isinstance(data, list) else []
+
+    def list_draft_import_runs(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        data = self._request("GET", f"/draft-import-runs?limit={limit}")
+        return data if isinstance(data, list) else []
+
+    def list_decision_logs(
+        self,
+        *,
+        limit: int = 50,
+        draft_id: int | None = None,
+        automation_run_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        params = [f"limit={limit}"]
+        if draft_id is not None:
+            params.append(f"draft_id={draft_id}")
+        if automation_run_id is not None:
+            params.append(f"automation_run_id={automation_run_id}")
+        data = self._request("GET", f"/decision-logs?{'&'.join(params)}")
+        return data if isinstance(data, list) else []
+
     def create_idea(
         self,
         *,
@@ -76,8 +102,20 @@ class GrowthAgentMCPClient:
         idea_id: int,
         drafts: list[dict[str, Any]],
         source: str = "chatgpt_mcp",
+        prompt_version: str = "mcp-v1",
+        context_snapshot: dict[str, Any] | None = None,
+        hypotheses: list[dict[str, Any]] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload = {"idea_id": idea_id, "drafts": drafts, "source": source}
+        payload = {
+            "idea_id": idea_id,
+            "drafts": drafts,
+            "source": source,
+            "prompt_version": prompt_version,
+            "context_snapshot": context_snapshot or {},
+            "hypotheses": hypotheses or [],
+            "metadata": metadata or {},
+        }
         return self._request("POST", "/drafts/import", json=payload)
 
     def evaluate_draft(self, *, draft_id: int) -> dict[str, Any]:
@@ -106,8 +144,7 @@ class GrowthAgentMCPClient:
     def explain_last_run_context(self) -> dict[str, Any]:
         return {
             "automation_status": self.get_automation_status(),
-            "metrics_summary": self.get_metrics_summary(),
-            "playbook": self.get_playbook(),
+            "memory_context": self.get_memory_context(),
         }
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any] | list[Any]:
