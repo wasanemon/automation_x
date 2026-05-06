@@ -83,7 +83,7 @@ For the first automatic operating loop, prefer the single cycle endpoint over ch
 
 Recommended HTTP settings:
 
-- Send `X-API-Key` from an n8n credential or environment variable.
+- Send `X-API-Key` from an n8n **Header Auth** credential.
 - Do not store API keys, Postiz keys, or X bearer tokens in workflow JSON.
 - Keep `SCHEDULING_DRY_RUN=true` and `AUTO_POSTING_ENABLED=false` for the first dry-run.
 - Enable live scheduling only for the test X account with `AUTO_POSTING_ENABLED=true`, `SCHEDULING_DRY_RUN=false`, and `AUTOMATION_KILL_SWITCH=false`.
@@ -116,12 +116,22 @@ This repo includes three n8n workflows under `n8n/`:
 - `growth_agent_n8n_live_cycle.json`
 - `growth_agent_n8n_metrics_catchup.json`
 
-Import them from n8n with **Import from File**. Review the nodes before activation, then set these n8n environment variables or equivalent credentials:
+Import them from n8n Cloud with **Import from File**. Review the nodes before activation, then configure:
 
-- `GROWTH_AGENT_BASE_URL`: Growth Agent API base URL, for example `http://localhost:8000`.
-- `GROWTH_AGENT_API_KEY`: API key sent as `X-API-Key`.
+- n8n variable `GROWTH_AGENT_BASE_URL`: public HTTPS Growth Agent API base URL, for example `https://growth-agent.example.com`.
+- n8n credential `Growth Agent Header Auth`: Header Auth with `Name = X-API-Key` and `Value = <GROWTH_AGENT_API_KEY>`.
 
-Do not paste `GROWTH_AGENT_API_KEY`, Postiz keys, or X bearer tokens into workflow JSON. Keep Postiz and X credentials in the Growth Agent `.env` or your deployment secret store.
+Do not paste `GROWTH_AGENT_API_KEY`, Postiz keys, or X bearer tokens into workflow JSON. Keep Growth Agent API auth in n8n credentials. Keep Postiz and X credentials in the Growth Agent deployment secret store.
+
+For production, n8n Cloud should call Growth Agent over public HTTPS:
+
+```text
+n8n Cloud -> https://<your-growth-agent-domain>
+```
+
+Do not use `http://localhost:8000` from n8n Cloud. That address only works from the machine running Growth Agent.
+
+After importing, each HTTP Request node is already configured for **Authentication = Generic Credential Type** and **Generic Auth Type = Header Auth**. Select your `Growth Agent Header Auth` credential on every HTTP Request node.
 
 ### Dry-Run Smoke Test
 

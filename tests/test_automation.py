@@ -1,4 +1,6 @@
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 from sqlalchemy import select
@@ -8,6 +10,12 @@ from growth_agent.clients.x_api import OwnedPost, XMetrics
 from growth_agent.config import get_settings
 from growth_agent.models import AutomationRun, Draft, Idea, Post
 from growth_agent.scripts import run_cycle as run_cycle_script
+
+N8N_WORKFLOW_FILES = (
+    Path("n8n/growth_agent_n8n_dry_run_smoke_test.json"),
+    Path("n8n/growth_agent_n8n_live_cycle.json"),
+    Path("n8n/growth_agent_n8n_metrics_catchup.json"),
+)
 
 
 def test_run_cycle_auto_posting_disabled_never_calls_live_postiz(
@@ -378,6 +386,27 @@ def test_run_cycle_script_does_not_print_api_key(monkeypatch, capsys):
     assert api_key not in captured.out
     assert api_key not in captured.err
     assert '"cycle_id": 1' in captured.out
+
+
+def test_n8n_workflows_use_header_auth_credentials_without_api_key_headers():
+    for path in N8N_WORKFLOW_FILES:
+        workflow = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.dumps(workflow)
+        assert "GROWTH_AGENT_API_KEY" not in raw
+        assert "X-API-Key" not in raw
+        assert "$env" not in raw
+        assert "$vars.GROWTH_AGENT_BASE_URL" in raw
+
+        http_nodes = [
+            node
+            for node in workflow["nodes"]
+            if node["type"] == "n8n-nodes-base.httpRequest"
+        ]
+        assert http_nodes
+        for node in http_nodes:
+            parameters = node["parameters"]
+            assert parameters["authentication"] == "genericCredentialType"
+            assert parameters["genericAuthType"] == "httpHeaderAuth"
 
 
 def _seed_safe_draft(

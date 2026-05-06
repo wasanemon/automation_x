@@ -20,16 +20,9 @@
     },
     {
       "parameters": {
-        "url": "={{$env.GROWTH_AGENT_BASE_URL + '/automation/status'}}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "X-API-Key",
-              "value": "={{$env.GROWTH_AGENT_API_KEY}}"
-            }
-          ]
-        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{$vars.GROWTH_AGENT_BASE_URL + '/automation/status'}}",
         "options": {}
       },
       "id": "get-status",
@@ -81,16 +74,9 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{$env.GROWTH_AGENT_BASE_URL + '/posts/reconcile-x-ids'}}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "X-API-Key",
-              "value": "={{$env.GROWTH_AGENT_API_KEY}}"
-            }
-          ]
-        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{$vars.GROWTH_AGENT_BASE_URL + '/posts/reconcile-x-ids'}}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ { lookback_days: 7, mappings: [] } }}",
@@ -105,16 +91,9 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{$env.GROWTH_AGENT_BASE_URL + '/metrics/collect'}}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "X-API-Key",
-              "value": "={{$env.GROWTH_AGENT_API_KEY}}"
-            }
-          ]
-        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{$vars.GROWTH_AGENT_BASE_URL + '/metrics/collect'}}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ { post_ids: null } }}",
@@ -128,16 +107,9 @@
     },
     {
       "parameters": {
-        "url": "={{$env.GROWTH_AGENT_BASE_URL + '/metrics/summary'}}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "X-API-Key",
-              "value": "={{$env.GROWTH_AGENT_API_KEY}}"
-            }
-          ]
-        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{$vars.GROWTH_AGENT_BASE_URL + '/metrics/summary'}}",
         "options": {}
       },
       "id": "summary-request",

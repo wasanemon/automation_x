@@ -20,16 +20,9 @@
     },
     {
       "parameters": {
-        "url": "={{$env.GROWTH_AGENT_BASE_URL + '/automation/status'}}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "X-API-Key",
-              "value": "={{$env.GROWTH_AGENT_API_KEY}}"
-            }
-          ]
-        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{$vars.GROWTH_AGENT_BASE_URL + '/automation/status'}}",
         "options": {}
       },
       "id": "get-status",
@@ -81,16 +74,9 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{$env.GROWTH_AGENT_BASE_URL + '/automation/run-cycle'}}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "X-API-Key",
-              "value": "={{$env.GROWTH_AGENT_API_KEY}}"
-            }
-          ]
-        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{$vars.GROWTH_AGENT_BASE_URL + '/automation/run-cycle'}}",
         "options": {}
       },
       "id": "run-cycle",

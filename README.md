@@ -228,7 +228,18 @@ Importable workflow JSON files are available in [n8n](n8n):
 - `growth_agent_n8n_live_cycle.json`
 - `growth_agent_n8n_metrics_catchup.json`
 
-They reference `GROWTH_AGENT_BASE_URL` and `GROWTH_AGENT_API_KEY` from n8n env vars. Do not put secret values directly into workflow JSON.
+For production, n8n Cloud should call a public HTTPS Growth Agent URL, not local `localhost`:
+
+```text
+n8n Cloud -> https://<your-growth-agent-domain>
+```
+
+The workflow JSON files reference the n8n variable `GROWTH_AGENT_BASE_URL` for that public HTTPS base URL. API authentication is configured as HTTP Request **Header Auth**. Create an n8n Header Auth credential with:
+
+- `Name`: `X-API-Key`
+- `Value`: your `GROWTH_AGENT_API_KEY`
+
+After import, select that credential on each HTTP Request node. Do not put secret values directly into workflow JSON.
 
 ## Environment Variables
 
