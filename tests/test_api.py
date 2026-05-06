@@ -1,10 +1,13 @@
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import select
+
 from growth_agent.clients.postiz import ExternalClientError, PostizClient
 from growth_agent.clients.x_api import OwnedPost, XMetrics
 from growth_agent.config import Settings, get_settings
 from growth_agent.deps import get_postiz_client
 from growth_agent.main import app
+from growth_agent.models import Draft, Post
 
 
 def test_health_and_idea_draft_generation(client):
@@ -32,6 +35,157 @@ def test_health_and_idea_draft_generation(client):
     ideas_response = client.get("/ideas")
     assert ideas_response.status_code == 200
     assert ideas_response.json()[0]["id"] == idea["id"]
+
+
+def test_imported_mcp_draft_runs_through_existing_dry_run_cycle(
+    client,
+    db_session,
+    mock_postiz,
+):
+    idea = client.post(
+        "/ideas/ingest",
+        json={
+            "title": "MCP generated note",
+            "description": "Use MCP to pass generated drafts into deterministic guardrails.",
+            "source": "chatgpt_mcp",
+            "audience": "builders",
+        },
+    ).json()
+
+    import_response = client.post(
+        "/drafts/import",
+        json={
+            "idea_id": idea["id"],
+            "source": "chatgpt_mcp",
+            "drafts": [
+                {
+                    "content": (
+                        "A small automation loop gets safer when generation and scheduling "
+                        "are separate."
+                    ),
+                    "hypothesis": "Separation of generation and scheduling increases trust.",
+                    "target_metric": "likes",
+                    "confidence": 0.86,
+                    "risk_notes": ["No URL or strong claim."],
+                    "requires_human_review_by_model": False,
+                }
+            ],
+        },
+    )
+
+    assert import_response.status_code == 201
+    body = import_response.json()
+    assert body["imported_count"] == 1
+    draft_id = body["drafts"][0]["id"]
+    assert "Imported from MCP source chatgpt_mcp." in body["drafts"][0]["evaluation_notes"]
+
+    cycle = client.post("/automation/run-cycle")
+
+    assert cycle.status_code == 200
+    cycle_body = cycle.json()
+    assert cycle_body["evaluated_drafts_count"] == 1
+    assert cycle_body["auto_schedule_candidates_count"] == 1
+    assert cycle_body["dry_run_scheduled_count"] == 1
+    assert cycle_body["live_scheduled_count"] == 0
+    assert mock_postiz.calls == []
+    draft = db_session.get(Draft, draft_id)
+    assert draft is not None
+    assert draft.status == "scheduled"
+    assert db_session.scalar(select(Post).where(Post.draft_id == draft_id)) is not None
+
+
+def test_imported_mcp_model_review_requirement_survives_evaluation(client):
+    idea = client.post(
+        "/ideas/ingest",
+        json={
+            "title": "Human review required",
+            "description": "A draft where the model is unsure.",
+            "source": "chatgpt_mcp",
+        },
+    ).json()
+    imported = client.post(
+        "/drafts/import",
+        json={
+            "idea_id": idea["id"],
+            "drafts": [
+                {
+                    "content": (
+                        "A careful field note about measuring a small workflow before "
+                        "expanding it."
+                    ),
+                    "confidence": 0.92,
+                    "requires_human_review_by_model": True,
+                }
+            ],
+        },
+    ).json()["drafts"][0]
+
+    evaluation = client.post(f"/drafts/{imported['id']}/evaluate").json()
+
+    assert evaluation["can_auto_schedule"] is False
+    assert evaluation["draft"]["requires_approval"] is True
+    assert "MCP requires human review." in evaluation["draft"]["evaluation_notes"]
+
+
+def test_imported_mcp_low_confidence_requires_approval(client):
+    idea = client.post(
+        "/ideas/ingest",
+        json={
+            "title": "Low confidence candidate",
+            "description": "A generated draft with low confidence.",
+            "source": "chatgpt_mcp",
+        },
+    ).json()
+    imported = client.post(
+        "/drafts/import",
+        json={
+            "idea_id": idea["id"],
+            "drafts": [
+                {
+                    "content": "A safe note, but the generator marked it as uncertain.",
+                    "confidence": 0.42,
+                }
+            ],
+        },
+    ).json()["drafts"][0]
+
+    evaluation = client.post(f"/drafts/{imported['id']}/evaluate").json()
+
+    assert evaluation["can_auto_schedule"] is False
+    assert evaluation["draft"]["requires_approval"] is True
+
+
+def test_imported_mcp_draft_unknown_idea_returns_404(client):
+    response = client.post(
+        "/drafts/import",
+        json={
+            "idea_id": 999,
+            "drafts": [{"content": "This draft cannot be imported without an idea."}],
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def test_imported_mcp_draft_rejects_configured_secret_values(client, monkeypatch):
+    secret = "ga_import_redaction_sentinel"
+    monkeypatch.setenv("GROWTH_AGENT_API_KEY", secret)
+    get_settings.cache_clear()
+    idea = client.post(
+        "/ideas/ingest",
+        json={"title": "Secret check", "description": "Do not persist configured secrets."},
+    ).json()
+
+    response = client.post(
+        "/drafts/import",
+        json={
+            "idea_id": idea["id"],
+            "drafts": [{"content": f"Do not store this configured secret: {secret}"}],
+        },
+    )
+
+    assert response.status_code == 400
+    assert secret not in response.text
 
 
 def test_api_key_auth_required_when_not_testing(client, monkeypatch):
