@@ -127,6 +127,23 @@ class FeedbackRun(Base, TimestampMixin):
     recommendations_json: Mapped[list[str]] = mapped_column(JSON, default=list)
 
 
+class LLMRun(Base):
+    __tablename__ = "llm_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(60), index=True)
+    model: Mapped[str] = mapped_column(String(120))
+    prompt_version: Mapped[str] = mapped_column(String(60))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="running", index=True)
+    input_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    output_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    error_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    usage_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    response_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+
+
 class AutomationRun(Base):
     __tablename__ = "automation_runs"
 
@@ -150,6 +167,9 @@ class AutomationRun(Base):
     reconciled_count: Mapped[int] = mapped_column(Integer, default=0)
     metrics_collected_count: Mapped[int] = mapped_column(Integer, default=0)
     metrics_skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    llm_generated_drafts_count: Mapped[int] = mapped_column(Integer, default=0)
+    llm_hypotheses_count: Mapped[int] = mapped_column(Integer, default=0)
+    llm_skipped_count: Mapped[int] = mapped_column(Integer, default=0)
     skipped_count: Mapped[int] = mapped_column(Integer, default=0)
     error_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     errors_json: Mapped[list[str]] = mapped_column(JSON, default=list)

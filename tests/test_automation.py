@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from growth_agent.clients.x_api import OwnedPost, XMetrics
 from growth_agent.config import get_settings
-from growth_agent.models import AutomationRun, Draft, Idea, Post
+from growth_agent.models import AutomationRun, Draft, Idea, LLMRun, Post
 from growth_agent.scripts import run_cycle as run_cycle_script
 
 N8N_WORKFLOW_FILES = (
@@ -266,6 +266,10 @@ def test_automation_status_reports_counts_and_warnings(
     assert body["max_auto_schedule_per_day"] == 3
     assert body["max_auto_schedule_per_cycle"] == 1
     assert body["min_hours_between_auto_posts"] == 4
+    assert body["llm_generation_enabled"] is False
+    assert body["llm_analysis_enabled"] is False
+    assert body["llm_full_auto_enabled"] is False
+    assert body["openai_configured"] is False
     assert body["today_auto_scheduled_count"] == 2
     assert body["approval_waiting_draft_count"] == 1
     assert body["unreconciled_post_count"] == 1
@@ -279,6 +283,7 @@ def test_automation_status_never_returns_secret_values(client, monkeypatch):
     monkeypatch.setenv("GROWTH_AGENT_API_KEY", "ga_redaction_sentinel_status")
     monkeypatch.setenv("POSTIZ_API_KEY", "postiz_redaction_sentinel_status")
     monkeypatch.setenv("X_BEARER_TOKEN", "x_redaction_sentinel_status")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai_redaction_sentinel_status")
     monkeypatch.setenv("X_USER_ID", "12345")
     get_settings.cache_clear()
 
@@ -289,6 +294,229 @@ def test_automation_status_never_returns_secret_values(client, monkeypatch):
     assert "ga_redaction_sentinel_status" not in body_text
     assert "postiz_redaction_sentinel_status" not in body_text
     assert "x_redaction_sentinel_status" not in body_text
+    assert "openai_redaction_sentinel_status" not in body_text
+
+
+def test_run_cycle_llm_disabled_uses_template_generator(
+    client,
+    db_session: Session,
+    mock_openai,
+):
+    client.post(
+        "/ideas/ingest",
+        json={
+            "title": "Template fallback",
+            "description": "Keep the existing generator available.",
+            "audience": "builders",
+        },
+    )
+
+    response = client.post("/automation/run-cycle")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["created_drafts_count"] == 1
+    assert body["llm_generated_drafts_count"] == 0
+    assert body["llm_hypotheses_count"] == 0
+    assert body["llm_skipped_count"] == 0
+    assert mock_openai.calls == []
+    draft = db_session.scalar(select(Draft))
+    assert draft is not None
+    assert "Template fallback" in draft.content
+
+
+def test_run_cycle_llm_enabled_without_openai_key_skips_safely(
+    client,
+    db_session: Session,
+    mock_postiz,
+    mock_openai,
+    monkeypatch,
+):
+    monkeypatch.setenv("LLM_GENERATION_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    get_settings.cache_clear()
+    client.post(
+        "/ideas/ingest",
+        json={
+            "title": "LLM missing key",
+            "description": "Do not lose this idea when OpenAI is not configured.",
+            "audience": "builders",
+        },
+    )
+
+    response = client.post("/automation/run-cycle")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["created_drafts_count"] == 0
+    assert body["llm_generated_drafts_count"] == 0
+    assert body["llm_skipped_count"] == 1
+    assert body["auto_scheduled_count"] == 0
+    assert mock_openai.calls == []
+    assert mock_postiz.calls == []
+    llm_run = db_session.scalar(select(LLMRun))
+    assert llm_run is not None
+    assert llm_run.status == "skipped"
+    assert "OPENAI_API_KEY" in llm_run.error_json["reason"]
+    idea = db_session.scalar(select(Idea).where(Idea.title == "LLM missing key"))
+    assert idea is not None
+    assert idea.status == "new"
+
+
+def test_run_cycle_llm_generates_evaluates_and_dry_run_schedules(
+    client,
+    db_session: Session,
+    mock_postiz,
+    mock_openai,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("LLM_GENERATION_ENABLED", "true")
+    monkeypatch.setenv("LLM_ANALYSIS_ENABLED", "true")
+    monkeypatch.setenv("LLM_FULL_AUTO_ENABLED", "true")
+    monkeypatch.setenv("SCHEDULING_DRY_RUN", "true")
+    get_settings.cache_clear()
+    client.post(
+        "/ideas/ingest",
+        json={
+            "title": "LLM auto draft",
+            "description": "Create one safe observable workflow post.",
+            "audience": "builders",
+        },
+    )
+
+    response = client.post("/automation/run-cycle")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["created_drafts_count"] == 1
+    assert body["evaluated_drafts_count"] == 1
+    assert body["llm_generated_drafts_count"] == 1
+    assert body["llm_hypotheses_count"] == 1
+    assert body["dry_run_scheduled_count"] == 1
+    assert body["live_scheduled_count"] == 0
+    assert mock_postiz.calls == []
+    assert len(mock_openai.calls) == 1
+    draft = db_session.scalar(select(Draft))
+    assert draft is not None
+    assert any("Generated by LLM run" in note for note in draft.evaluation_notes)
+    llm_run = db_session.scalar(select(LLMRun))
+    assert llm_run is not None
+    assert llm_run.status == "completed"
+    run = db_session.get(AutomationRun, body["cycle_id"])
+    assert run is not None
+    assert run.summary_json["llm"]["generated_drafts"] == 1
+
+
+def test_run_cycle_llm_review_required_draft_is_not_scheduled(
+    client,
+    db_session: Session,
+    mock_postiz,
+    mock_openai,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("LLM_GENERATION_ENABLED", "true")
+    monkeypatch.setenv("LLM_FULL_AUTO_ENABLED", "true")
+    get_settings.cache_clear()
+    mock_openai.output = {
+        "drafts": [
+            {
+                "content": "A practical post with a claim that needs review.",
+                "hypothesis": "Review-required drafts should stop before scheduling.",
+                "target_audience": "builders",
+                "expected_metric": "replies",
+                "confidence": 0.95,
+                "risk_notes": ["The model is unsure about the claim."],
+                "contains_url": False,
+                "contains_claim": True,
+                "requires_human_review_by_model": True,
+            }
+        ],
+        "hypotheses": [],
+    }
+    client.post(
+        "/ideas/ingest",
+        json={
+            "title": "LLM review",
+            "description": "Require review when model flags risk.",
+            "audience": "builders",
+        },
+    )
+
+    response = client.post("/automation/run-cycle")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["llm_generated_drafts_count"] == 1
+    assert body["approval_required_count"] == 1
+    assert body["auto_scheduled_count"] == 0
+    assert mock_postiz.calls == []
+    draft = db_session.scalar(select(Draft))
+    assert draft is not None
+    assert draft.status == "approval_required"
+
+
+def test_run_cycle_llm_live_conditions_call_postiz_once(
+    client,
+    db_session: Session,
+    mock_postiz,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("LLM_GENERATION_ENABLED", "true")
+    monkeypatch.setenv("LLM_FULL_AUTO_ENABLED", "true")
+    monkeypatch.setenv("SCHEDULING_DRY_RUN", "false")
+    monkeypatch.setenv("AUTO_POSTING_ENABLED", "true")
+    get_settings.cache_clear()
+    client.post(
+        "/ideas/ingest",
+        json={
+            "title": "LLM live",
+            "description": "Create one safe live scheduling candidate.",
+            "audience": "builders",
+        },
+    )
+
+    response = client.post("/automation/run-cycle")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["llm_generated_drafts_count"] == 1
+    assert body["dry_run_scheduled_count"] == 0
+    assert body["live_scheduled_count"] == 1
+    assert len(mock_postiz.calls) == 1
+
+
+def test_run_cycle_llm_kill_switch_blocks_postiz(
+    client,
+    mock_postiz,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("LLM_GENERATION_ENABLED", "true")
+    monkeypatch.setenv("LLM_FULL_AUTO_ENABLED", "true")
+    monkeypatch.setenv("SCHEDULING_DRY_RUN", "false")
+    monkeypatch.setenv("AUTO_POSTING_ENABLED", "true")
+    monkeypatch.setenv("AUTOMATION_KILL_SWITCH", "true")
+    get_settings.cache_clear()
+    client.post(
+        "/ideas/ingest",
+        json={
+            "title": "LLM kill switch",
+            "description": "Generate but do not schedule.",
+            "audience": "builders",
+        },
+    )
+
+    response = client.post("/automation/run-cycle")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["llm_generated_drafts_count"] == 1
+    assert body["auto_scheduled_count"] == 0
+    assert body["kill_switch_active"] is True
+    assert mock_postiz.calls == []
 
 
 def test_duplicate_draft_is_counted_and_not_scheduled(

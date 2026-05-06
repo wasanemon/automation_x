@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from growth_agent.clients.openai_client import OpenAIClient
 from growth_agent.clients.postiz import ExternalClientError, PostizClient
 from growth_agent.clients.x_api import XApiClient
 from growth_agent.config import Settings
@@ -14,6 +15,7 @@ from growth_agent.models import AutomationRun, Draft, Idea, MetricSnapshot, Post
 from growth_agent.schemas import AutomationCycleResponse, AutomationStatusResponse
 from growth_agent.services.drafts import create_drafts_for_idea
 from growth_agent.services.evaluator import DraftEvaluator
+from growth_agent.services.llm_generation import LLMGenerationOutcome, create_llm_drafts_for_idea
 from growth_agent.services.metrics import collect_metrics, count_metric_candidates
 from growth_agent.services.reconcile import reconcile_x_ids
 
@@ -37,6 +39,9 @@ class CycleCounters:
     reconciled: int = 0
     metrics_collected: int = 0
     metrics_skipped: int = 0
+    llm_generated_drafts: int = 0
+    llm_hypotheses: int = 0
+    llm_skipped: int = 0
     skipped: int = 0
 
 
@@ -51,6 +56,7 @@ def run_automation_cycle(
     db: Session,
     postiz_client: PostizClient,
     x_client: XApiClient,
+    openai_client: OpenAIClient,
     settings: Settings,
 ) -> AutomationCycleResponse:
     live_scheduling_allowed = _live_scheduling_allowed(settings)
@@ -73,13 +79,34 @@ def run_automation_cycle(
     summary: dict[str, Any] = {
         "kill_switch_active": settings.automation_kill_switch,
         "live_scheduling_allowed": live_scheduling_allowed,
+        "llm_generation_enabled": settings.llm_generation_enabled,
+        "llm_analysis_enabled": settings.llm_analysis_enabled,
+        "llm_full_auto_enabled": settings.llm_full_auto_enabled,
         "schedule_decisions": [],
         "scheduled_posts": [],
+        "llm": {},
     }
 
     try:
-        created_drafts = _create_drafts_from_next_idea(db)
+        created_drafts, llm_outcome = _create_drafts_from_next_idea(
+            db,
+            settings,
+            openai_client,
+        )
         counters.created_drafts = len(created_drafts)
+        if llm_outcome is not None:
+            counters.llm_generated_drafts = len(llm_outcome.drafts)
+            counters.llm_hypotheses = llm_outcome.hypotheses_count
+            counters.llm_skipped = 1 if llm_outcome.skipped else 0
+            counters.skipped += counters.llm_skipped
+            summary["llm"] = {
+                "run_id": llm_outcome.llm_run_id,
+                "generated_drafts": len(llm_outcome.drafts),
+                "hypotheses": llm_outcome.hypotheses_count,
+                "skipped": llm_outcome.skipped,
+            }
+            if llm_outcome.error:
+                errors.append(_error("llm_generation", llm_outcome.error, settings))
         if not created_drafts:
             counters.skipped += 1
             summary["schedule_decisions"].append(
@@ -89,7 +116,7 @@ def run_automation_cycle(
         evaluator = DraftEvaluator(settings)
         evaluated_drafts = _evaluate_generated_drafts(db, evaluator, errors, settings)
         counters.evaluated_drafts = len(evaluated_drafts)
-        counters.approval_required += _mark_approval_required(db, evaluated_drafts)
+        counters.approval_required += _mark_approval_required(db, evaluated_drafts, settings)
         counters.rejected += sum(1 for draft in evaluated_drafts if draft.status == "rejected")
         counters.duplicate_skipped += _duplicate_skipped_draft_count(db)
 
@@ -152,6 +179,9 @@ def run_automation_cycle(
         reconciled_count=run.reconciled_count,
         metrics_collected_count=run.metrics_collected_count,
         metrics_skipped_count=run.metrics_skipped_count,
+        llm_generated_drafts_count=run.llm_generated_drafts_count,
+        llm_hypotheses_count=run.llm_hypotheses_count,
+        llm_skipped_count=run.llm_skipped_count,
         skipped_count=run.skipped_count,
         errors=run.errors_json,
         error_details=run.error_json,
@@ -173,6 +203,10 @@ def automation_status(db: Session, settings: Settings) -> AutomationStatusRespon
         max_auto_schedule_per_day=settings.max_auto_schedule_per_day,
         max_auto_schedule_per_cycle=settings.max_auto_schedule_per_cycle,
         min_hours_between_auto_posts=settings.min_hours_between_auto_posts,
+        llm_generation_enabled=settings.llm_generation_enabled,
+        llm_analysis_enabled=settings.llm_analysis_enabled,
+        llm_full_auto_enabled=settings.llm_full_auto_enabled,
+        openai_configured=bool(settings.openai_api_key),
         next_post_available_at=limits.next_post_available_at,
         approval_waiting_draft_count=_approval_waiting_draft_count(db),
         unreconciled_post_count=_unreconciled_post_count(db),
@@ -183,7 +217,11 @@ def automation_status(db: Session, settings: Settings) -> AutomationStatusRespon
     )
 
 
-def _create_drafts_from_next_idea(db: Session) -> list[Draft]:
+def _create_drafts_from_next_idea(
+    db: Session,
+    settings: Settings,
+    openai_client: OpenAIClient,
+) -> tuple[list[Draft], LLMGenerationOutcome | None]:
     idea = db.scalar(
         select(Idea)
         .where(Idea.status.in_(("new", "queued")))
@@ -192,14 +230,27 @@ def _create_drafts_from_next_idea(db: Session) -> list[Draft]:
     )
     if idea is None:
         if _has_pending_draft_work(db):
-            return []
+            return [], None
         idea = _create_default_idea(db)
+
+    if settings.llm_generation_enabled and not openai_client.credentials_ready:
+        llm_outcome = create_llm_drafts_for_idea(db, idea, openai_client, settings)
+        return [], llm_outcome
+
+    if settings.llm_generation_enabled:
+        llm_outcome = create_llm_drafts_for_idea(db, idea, openai_client, settings)
+        drafts = llm_outcome.drafts
+        if drafts:
+            idea.status = "processed"
+            db.add(idea)
+            db.commit()
+        return drafts, llm_outcome
 
     drafts = create_drafts_for_idea(db, idea, AUTOMATION_DRAFT_BATCH_SIZE)
     idea.status = "processed"
     db.add(idea)
     db.commit()
-    return drafts
+    return drafts, None
 
 
 def _has_pending_draft_work(db: Session) -> bool:
@@ -255,9 +306,11 @@ def _evaluate_generated_drafts(
     return evaluated
 
 
-def _mark_approval_required(db: Session, drafts: list[Draft]) -> int:
+def _mark_approval_required(db: Session, drafts: list[Draft], settings: Settings) -> int:
     count = 0
     for draft in drafts:
+        if _llm_policy_requires_approval(draft, settings):
+            draft.requires_approval = True
         if draft.requires_approval and draft.status != "rejected":
             draft.status = "approval_required"
             db.add(draft)
@@ -265,6 +318,20 @@ def _mark_approval_required(db: Session, drafts: list[Draft]) -> int:
     if count:
         db.commit()
     return count
+
+
+def _llm_policy_requires_approval(draft: Draft, settings: Settings) -> bool:
+    notes = list(draft.evaluation_notes or [])
+    generated_by_llm = any(note.startswith("Generated by LLM run ") for note in notes)
+    if not generated_by_llm:
+        return False
+    if not settings.llm_full_auto_enabled:
+        return True
+    return any(
+        note.startswith("LLM requires human review.")
+        or note.startswith("LLM confidence below threshold.")
+        for note in notes
+    )
 
 
 def _duplicate_skipped_draft_count(db: Session) -> int:
@@ -602,6 +669,12 @@ def _system_warnings(
         warnings.append("SCHEDULING_DRY_RUN=true; scheduling creates local dry-run records.")
     if settings.automation_kill_switch:
         warnings.append("AUTOMATION_KILL_SWITCH=true; automation scheduling is paused.")
+    if not settings.llm_generation_enabled:
+        warnings.append("LLM_GENERATION_ENABLED=false; automation uses deterministic templates.")
+    if settings.llm_generation_enabled and not settings.openai_api_key:
+        warnings.append("OPENAI_API_KEY missing; LLM generation will skip.")
+    if settings.llm_generation_enabled and not settings.llm_full_auto_enabled:
+        warnings.append("LLM_FULL_AUTO_ENABLED=false; LLM drafts require human approval.")
     if limits.next_post_available_at is None:
         warnings.append("Auto scheduling is disabled by the current per-cycle or daily limit.")
     missing_postiz = [
@@ -653,6 +726,9 @@ def _finish_run(
     run.reconciled_count = counters.reconciled
     run.metrics_collected_count = counters.metrics_collected
     run.metrics_skipped_count = counters.metrics_skipped
+    run.llm_generated_drafts_count = counters.llm_generated_drafts
+    run.llm_hypotheses_count = counters.llm_hypotheses
+    run.llm_skipped_count = counters.llm_skipped
     run.skipped_count = counters.skipped
     run.error_json = errors
     run.errors_json = _error_messages(errors)
@@ -662,6 +738,9 @@ def _finish_run(
         "kill_switch_active": run.kill_switch_active,
         "dry_run": run.dry_run,
         "live_scheduling_allowed": not run.dry_run,
+        "llm_generation_enabled": summary.get("llm_generation_enabled", False),
+        "llm_analysis_enabled": summary.get("llm_analysis_enabled", False),
+        "llm_full_auto_enabled": summary.get("llm_full_auto_enabled", False),
     }
     db.add(run)
     db.commit()
@@ -683,6 +762,8 @@ def _next_recommended_action(run: AutomationRun, settings: Settings) -> str:
         )
     if run.error_json:
         return "Review automation run errors before enabling or increasing scheduling."
+    if run.llm_skipped_count:
+        return "Configure OPENAI_API_KEY or disable LLM generation before the next cycle."
     if run.approval_required_count:
         return "Review approval-required drafts before scheduling them manually."
     if run.auto_scheduled_count and run.dry_run:
@@ -698,6 +779,7 @@ def _error(stage: str, message: str, settings: Settings, **extra: Any) -> dict[s
         settings.growth_agent_api_key,
         settings.postiz_api_key,
         settings.x_bearer_token,
+        settings.openai_api_key,
     ):
         if secret:
             safe_message = safe_message.replace(secret, "****")

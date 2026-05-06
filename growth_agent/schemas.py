@@ -220,6 +220,9 @@ class AutomationRunHistoryResponse(BaseModel):
     reconciled_count: int
     metrics_collected_count: int
     metrics_skipped_count: int
+    llm_generated_drafts_count: int
+    llm_hypotheses_count: int
+    llm_skipped_count: int
     skipped_count: int
     error_json: list[dict[str, Any]]
     errors_json: list[str]
@@ -242,6 +245,9 @@ class AutomationCycleResponse(BaseModel):
     reconciled_count: int
     metrics_collected_count: int
     metrics_skipped_count: int
+    llm_generated_drafts_count: int
+    llm_hypotheses_count: int
+    llm_skipped_count: int
     skipped_count: int
     errors: list[str] = Field(default_factory=list)
     error_details: list[dict[str, Any]] = Field(default_factory=list)
@@ -258,6 +264,10 @@ class AutomationStatusResponse(BaseModel):
     max_auto_schedule_per_day: int
     max_auto_schedule_per_cycle: int
     min_hours_between_auto_posts: int
+    llm_generation_enabled: bool
+    llm_analysis_enabled: bool
+    llm_full_auto_enabled: bool
+    openai_configured: bool
     next_post_available_at: datetime | None
     approval_waiting_draft_count: int
     unreconciled_post_count: int

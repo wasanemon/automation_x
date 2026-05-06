@@ -171,6 +171,7 @@ class DraftEvaluator:
         )
 
     def apply(self, db: Session, draft: Draft) -> EvaluationResult:
+        existing_notes = list(draft.evaluation_notes or [])
         result = self.evaluate(db, draft)
         draft.score = result.score
         draft.risk_level = result.risk_level
@@ -178,7 +179,7 @@ class DraftEvaluator:
         draft.requires_approval = result.requires_approval
         draft.duplicate_of_draft_id = result.duplicate_of_draft_id
         draft.duplicate_reason = result.duplicate_reason
-        draft.evaluation_notes = result.notes
+        draft.evaluation_notes = [*existing_notes, *result.notes]
         if draft.status == "generated":
             draft.status = "evaluated"
         db.add(draft)

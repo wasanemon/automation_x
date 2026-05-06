@@ -24,6 +24,15 @@ DEFAULTS = {
     "AUTO_APPLY_TENTATIVE_RULES": "false",
     "X_RECONCILE_LOOKBACK_HOURS": "48",
     "X_RECONCILE_TEXT_SIMILARITY_THRESHOLD": "0.82",
+    "OPENAI_API_BASE_URL": "https://api.openai.com",
+    "OPENAI_MODEL": "gpt-5.5",
+    "LLM_GENERATION_ENABLED": "false",
+    "LLM_ANALYSIS_ENABLED": "false",
+    "LLM_FULL_AUTO_ENABLED": "false",
+    "LLM_DRAFTS_PER_CYCLE": "3",
+    "LLM_PROMPT_VERSION": "v1",
+    "LLM_MAX_RECENT_POSTS": "20",
+    "LLM_MIN_CONFIDENCE": "0.7",
 }
 
 DRY_RUN_REQUIRED = ("DATABASE_URL", "GROWTH_AGENT_API_KEY", "SCHEDULING_DRY_RUN")
@@ -34,6 +43,7 @@ POSTIZ_REQUIRED = (
     "TEST_X_ACCOUNT_HANDLE",
 )
 X_METRICS_REQUIRED = ("X_BEARER_TOKEN", "X_USER_ID")
+OPENAI_REQUIRED = ("OPENAI_API_KEY",)
 
 DISPLAY_KEYS = (
     "DATABASE_URL",
@@ -58,11 +68,21 @@ DISPLAY_KEYS = (
     "X_USER_ID",
     "X_RECONCILE_LOOKBACK_HOURS",
     "X_RECONCILE_TEXT_SIMILARITY_THRESHOLD",
+    "OPENAI_API_KEY",
+    "OPENAI_API_BASE_URL",
+    "OPENAI_MODEL",
+    "LLM_GENERATION_ENABLED",
+    "LLM_ANALYSIS_ENABLED",
+    "LLM_FULL_AUTO_ENABLED",
+    "LLM_DRAFTS_PER_CYCLE",
+    "LLM_PROMPT_VERSION",
+    "LLM_MAX_RECENT_POSTS",
+    "LLM_MIN_CONFIDENCE",
     "REQUEST_TIMEOUT_SECONDS",
     "MAX_EXTERNAL_RETRIES",
 )
 
-SECRET_KEYS = {"GROWTH_AGENT_API_KEY", "POSTIZ_API_KEY", "X_BEARER_TOKEN"}
+SECRET_KEYS = {"GROWTH_AGENT_API_KEY", "POSTIZ_API_KEY", "X_BEARER_TOKEN", "OPENAI_API_KEY"}
 VALUE_OK_TO_PRINT = {
     "TESTING",
     "SCHEDULING_DRY_RUN",
@@ -77,6 +97,15 @@ VALUE_OK_TO_PRINT = {
     "X_USER_ID",
     "X_RECONCILE_LOOKBACK_HOURS",
     "X_RECONCILE_TEXT_SIMILARITY_THRESHOLD",
+    "OPENAI_API_BASE_URL",
+    "OPENAI_MODEL",
+    "LLM_GENERATION_ENABLED",
+    "LLM_ANALYSIS_ENABLED",
+    "LLM_FULL_AUTO_ENABLED",
+    "LLM_DRAFTS_PER_CYCLE",
+    "LLM_PROMPT_VERSION",
+    "LLM_MAX_RECENT_POSTS",
+    "LLM_MIN_CONFIDENCE",
     "REQUEST_TIMEOUT_SECONDS",
     "MAX_EXTERNAL_RETRIES",
 }
@@ -91,11 +120,13 @@ def main() -> int:
         + DRY_RUN_REQUIRED
         + POSTIZ_REQUIRED
         + X_METRICS_REQUIRED
+        + OPENAI_REQUIRED
     }
 
     dry_run_missing = missing(effective, DRY_RUN_REQUIRED)
     postiz_missing = missing(effective, POSTIZ_REQUIRED)
     x_missing = missing(effective, X_METRICS_REQUIRED)
+    openai_missing = missing(effective, OPENAI_REQUIRED)
     dry_run_enabled = parse_bool(effective.get("SCHEDULING_DRY_RUN"), default=True)
     auto_posting_enabled = parse_bool(effective.get("AUTO_POSTING_ENABLED"), default=False)
     kill_switch_enabled = parse_bool(effective.get("AUTOMATION_KILL_SWITCH"), default=False)
@@ -114,6 +145,7 @@ def main() -> int:
     print(f"- dry-run flow: {ready_label(not dry_run_missing and dry_run_enabled)}")
     print(f"- Postiz test scheduling config: {ready_label(not postiz_missing)}")
     print(f"- X metrics ready: {ready_label(not x_missing)}")
+    print(f"- OpenAI LLM generation ready: {ready_label(not openai_missing)}")
 
     print("\nSettings:")
     for key in DISPLAY_KEYS:
@@ -123,6 +155,7 @@ def main() -> int:
         "dry-run": dry_run_missing,
         "Postiz test scheduling": postiz_missing,
         "X metrics": x_missing,
+        "OpenAI LLM generation": openai_missing,
     }
     print("\nMissing:")
     any_missing = False
@@ -139,6 +172,7 @@ def main() -> int:
         kill_switch_enabled=kill_switch_enabled,
         postiz_missing=postiz_missing,
         x_missing=x_missing,
+        openai_missing=openai_missing,
         owned_domains=effective.get("OWNED_DOMAINS", ""),
     )
     print("\nNotes:")
@@ -246,6 +280,7 @@ def build_warnings(
     kill_switch_enabled: bool,
     postiz_missing: list[str],
     x_missing: list[str],
+    openai_missing: list[str],
     owned_domains: str,
 ) -> list[str]:
     warnings: list[str] = []
@@ -263,6 +298,8 @@ def build_warnings(
         warnings.append(
             "X metrics credentials are incomplete; metrics collection will skip safely."
         )
+    if openai_missing:
+        warnings.append("OpenAI credentials are incomplete; LLM generation will skip safely.")
     if not owned_domains.strip():
         warnings.append("OWNED_DOMAINS is empty; URL-bearing drafts require human approval.")
     return warnings

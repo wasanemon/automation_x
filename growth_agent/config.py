@@ -33,6 +33,17 @@ class Settings(BaseSettings):
     x_reconcile_lookback_hours: int = Field(default=48, ge=1, le=24 * 30)
     x_reconcile_text_similarity_threshold: float = Field(default=0.82, ge=0.5, le=1)
 
+    openai_api_key: str = ""
+    openai_api_base_url: str = "https://api.openai.com"
+    openai_model: str = "gpt-5.5"
+    llm_generation_enabled: bool = False
+    llm_analysis_enabled: bool = False
+    llm_full_auto_enabled: bool = False
+    llm_drafts_per_cycle: int = Field(default=3, ge=1, le=10)
+    llm_prompt_version: str = "v1"
+    llm_max_recent_posts: int = Field(default=20, ge=0, le=100)
+    llm_min_confidence: float = Field(default=0.7, ge=0, le=1)
+
     request_timeout_seconds: float = Field(
         default=10,
         ge=1,

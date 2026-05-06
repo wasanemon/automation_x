@@ -4,11 +4,12 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from growth_agent.clients.openai_client import OpenAIClient
 from growth_agent.clients.postiz import ExternalClientError, PostizClient
 from growth_agent.clients.x_api import XApiClient
 from growth_agent.config import get_settings
 from growth_agent.database import get_db
-from growth_agent.deps import get_postiz_client, get_x_client, require_api_key
+from growth_agent.deps import get_openai_client, get_postiz_client, get_x_client, require_api_key
 from growth_agent.models import Draft, Idea, Post
 from growth_agent.schemas import (
     ApprovalRequest,
@@ -255,8 +256,9 @@ def run_automation_cycle_endpoint(
     db: Session = Depends(get_db),
     postiz_client: PostizClient = Depends(get_postiz_client),
     x_client: XApiClient = Depends(get_x_client),
+    openai_client: OpenAIClient = Depends(get_openai_client),
 ) -> AutomationCycleResponse:
-    return run_automation_cycle(db, postiz_client, x_client, get_settings())
+    return run_automation_cycle(db, postiz_client, x_client, openai_client, get_settings())
 
 
 @app.post(
